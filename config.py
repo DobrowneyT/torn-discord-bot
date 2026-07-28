@@ -26,7 +26,7 @@ CPR_REQUIREMENTS = {
         "difficulty": 7,
         "positions": {
             "Bomber": 75, "Engineer": 75, "Hacker": 70,
-            "Muscle": 75, "Picklock #1": 70, "Picklock #2": 70,
+            "Muscle": 75, "Picklock #1": 70, "Picklock #2": 50,
         },
     },
     "Break the Bank": {
