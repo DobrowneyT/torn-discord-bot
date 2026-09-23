@@ -1,0 +1,129 @@
+"""
+Runtime settings for the Chain Watch surfaces — editable from Discord, no
+restart, persisted to state.json.
+
+⚠️ **The line this file draws matters more than any setting in it.**
+
+What the bot owns is *how it talks*: how often the board refreshes, how much
+lead time a shift ping gets, which channel things land in, how many hours to
+show. Those are presentation, and presentation is exactly what wants tuning
+live while leaders are looking at it.
+
+What the bot does **not** own is anything about the event itself — bonus hours,
+watchers per hour, payout per slot, the six-hour gap horizon. Those live on the
+dashboard, and the bot renders what it is handed. Exposing them here would make
+two places authoritative for one number, and the one that drifts is always the
+one nobody is looking at. If a leader wants the bonus hours changed, that is a
+dashboard control; the bot will show the change on its next refresh.
+
+⚠️ The gap horizon is the sharpest case: the board and the dashboard page must
+never disagree about what is unfilled, so the horizon arrives **in the payload**
+rather than being configured twice.
+"""
+
+import logging
+from typing import Any, Dict, Optional, Tuple
+
+import state
+
+log = logging.getLogger("chain_settings")
+
+STATE_KEY = "chain_settings"
+
+
+class Setting:
+    def __init__(self, key: str, default: Any, kind: str, help_text: str,
+                 lo: Optional[float] = None, hi: Optional[float] = None):
+        self.key = key
+        self.default = default
+        self.kind = kind          # "int" | "bool" | "channel"
+        self.help = help_text
+        self.lo = lo
+        self.hi = hi
+
+    def coerce(self, raw: Any) -> Tuple[Optional[Any], Optional[str]]:
+        """Parse and bound-check. Returns (value, error) — never raises at the caller."""
+        if self.kind == "bool":
+            s = str(raw).strip().lower()
+            if s in ("1", "true", "yes", "on"):
+                return True, None
+            if s in ("0", "false", "no", "off"):
+                return False, None
+            return None, f"`{self.key}` is on/off — got `{raw}`."
+        try:
+            n = int(raw)
+        except (TypeError, ValueError):
+            return None, f"`{self.key}` is a whole number — got `{raw}`."
+        if self.lo is not None and n < self.lo:
+            return None, f"`{self.key}` must be at least {self.lo:g}."
+        if self.hi is not None and n > self.hi:
+            return None, f"`{self.key}` must be at most {self.hi:g}."
+        return n, None
+
+
+SETTINGS: Dict[str, Setting] = {
+    s.key: s for s in [
+        Setting("board_channel_id", 0, "channel",
+                "Where the standing board lives. It is edited in place, never re-posted."),
+        Setting("ping_channel_id", 0, "channel",
+                "Where shift pings go. Falls back to the board channel when unset."),
+        Setting("board_refresh_seconds", 300, "int",
+                "How often the board is re-drawn.", lo=60, hi=3600),
+        Setting("board_hours_shown", 24, "int",
+                "How many upcoming hours the board lists.", lo=4, hi=72),
+        # ⚠️ Notification timing, which is the bot's business. The GAP HORIZON is
+        # not here on purpose — it comes from the dashboard so the board and the
+        # page cannot disagree about what is unfilled.
+        Setting("shift_lead_minutes", 5, "int",
+                "How long before a shift its watcher is pinged.", lo=1, hi=120),
+        Setting("flight_lead_minutes", 60, "int",
+                "Earlier warning for a watcher in the air — five minutes' notice is "
+                "useless to someone over the Atlantic.", lo=5, hi=360),
+        Setting("mention_members", True, "bool",
+                "Ping people by mention. Off posts their name without notifying."),
+        Setting("quiet_when_covered", False, "bool",
+                "Skip the gap line entirely when every slot ahead is filled."),
+    ]
+}
+
+
+def _store() -> Dict[str, Any]:
+    return state.load_state().get(STATE_KEY, {}) or {}
+
+
+def all_settings() -> Dict[str, Any]:
+    """Every setting with its effective value — stored where set, default otherwise."""
+    stored = _store()
+    return {k: stored.get(k, s.default) for k, s in SETTINGS.items()}
+
+
+def get(key: str) -> Any:
+    s = SETTINGS.get(key)
+    if s is None:
+        raise KeyError(key)
+    return _store().get(key, s.default)
+
+
+def set_value(key: str, raw: Any) -> Tuple[bool, str]:
+    """Validate and persist. Returns (ok, message) — the message is what Discord shows."""
+    s = SETTINGS.get(key)
+    if s is None:
+        return False, f"No setting called `{key}`. Try `/chain settings`."
+    value, err = s.coerce(raw)
+    if err:
+        return False, err
+    st = state.load_state()
+    st.setdefault(STATE_KEY, {})[key] = value
+    state.save_state(st)
+    log.info("chain setting %s = %r", key, value)
+    return True, f"`{key}` is now **{value}**."
+
+
+def reset(key: str) -> Tuple[bool, str]:
+    s = SETTINGS.get(key)
+    if s is None:
+        return False, f"No setting called `{key}`."
+    st = state.load_state()
+    st.get(STATE_KEY, {}).pop(key, None)
+    state.save_state(st)
+    return True, f"`{key}` is back to its default, **{s.default}**."
