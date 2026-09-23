@@ -36,7 +36,8 @@ def _walk(tree):
 def test_every_command_is_attached():
     names = _walk(build())
     for expected in ("chain settings", "chain set", "chain reset", "chain refresh",
-                     "chain tenant list", "chain tenant add", "chain tenant remove"):
+                     "chain tenant list", "chain tenant add", "chain tenant remove",
+                     "chain link", "chain unlink", "chain link-status", "chain link-sync"):
         assert expected in names, f"{expected} missing — it would simply not appear in Discord"
 
 

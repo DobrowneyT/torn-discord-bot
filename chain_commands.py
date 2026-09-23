@@ -17,6 +17,9 @@ from typing import Optional, Tuple
 import discord
 from discord import app_commands
 
+import chain_api
+import chain_identity
+import chain_link_sync
 import chain_settings
 import chain_tenants
 
@@ -63,6 +66,19 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     that takes five minutes to visibly apply feels broken while somebody is
     watching.
     """
+    async def _sync(slug: str, guild: Optional[discord.Guild]):
+        """
+        Pull the roster and re-run the match. Returns None when unreachable.
+
+        ⚠️ Delegates to chain_link_sync so there is ONE matcher. A second one
+        living in the command handler would drift from the one that runs on
+        startup, and the drift would only show up as a ping that did not arrive.
+        """
+        tenant = chain_tenants.get(slug)
+        if tenant is None:
+            return None
+        return await chain_link_sync.sync_tenant(tree.client, tenant)
+
     chain = app_commands.Group(name="chain", description="Chain Watch board and pings")
 
     @chain.command(name="settings", description="Show every tunable and its current value")
@@ -237,6 +253,108 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
 
     @tenant_remove.autocomplete("slug")
     async def tenant_remove_autocomplete(interaction: discord.Interaction, current: str):
+        return _slug_choices(current)
+
+    # ── identity (#784) ──────────────────────────────────────────────────────
+    #
+    # ⚠️ These are the ESCAPE HATCH, not the primary path. The auto-match runs
+    # on startup and on member-join; `/chain link` exists for the handful it
+    # cannot resolve. If somebody finds themselves running it a hundred times,
+    # the auto-match is broken and that is the bug to fix.
+
+    @chain.command(name="link", description="Tell the bot which Torn member a Discord user is")
+    @app_commands.describe(user="The Discord user", torn_id="Their Torn player id")
+    async def link_cmd(interaction: discord.Interaction, user: discord.User,
+                       torn_id: str) -> None:
+        if not _is_lead(interaction, lead_role_id):
+            await interaction.response.send_message(
+                "That is a leadership control.", ephemeral=True)
+            return
+        torn_id = (torn_id or "").strip()
+        if not torn_id.isdigit():
+            await interaction.response.send_message(
+                f"`{torn_id}` is not a Torn player id.", ephemeral=True)
+            return
+        # ⚠️ Clear any other Torn member already pointing at this Discord user
+        # before linking. One account is one person, and a silently doubled link
+        # pings somebody for shifts that are not theirs.
+        freed = [m for m in chain_identity.unlink_discord(user.id) if m != torn_id]
+        chain_identity.link(torn_id, user.id, name=user.display_name)
+        note = f" (was linked to `{', '.join(freed)}`)" if freed else ""
+        await interaction.response.send_message(
+            f"{user.mention} is Torn `{torn_id}`{note}. "
+            "This is a manual link — the auto-match will not overwrite it.",
+            ephemeral=True)
+
+    @chain.command(name="unlink", description="Forget who a Discord user is")
+    @app_commands.describe(user="The Discord user")
+    async def unlink_cmd(interaction: discord.Interaction, user: discord.User) -> None:
+        if not _is_lead(interaction, lead_role_id):
+            await interaction.response.send_message(
+                "That is a leadership control.", ephemeral=True)
+            return
+        freed = chain_identity.unlink_discord(user.id)
+        await interaction.response.send_message(
+            f"Unlinked {user.mention} from `{', '.join(freed)}`." if freed
+            else f"{user.mention} was not linked to anybody.", ephemeral=True)
+
+    @chain.command(name="link-status", description="Who is linked, and who still needs doing")
+    @app_commands.describe(faction="Which faction (optional when only one is configured)")
+    async def link_status_cmd(interaction: discord.Interaction,
+                              faction: Optional[str] = None) -> None:
+        slug, err = _resolve(faction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        summary = await _sync(slug, interaction.guild)
+        if summary is None:
+            await interaction.response.send_message(
+                f"Could not reach `{slug}`'s dashboard, so the roster is unknown.",
+                ephemeral=True)
+            return
+        lines = [f"**{summary['linked']} of {summary['total']} linked.**"]
+        # ⚠️ Ambiguous and simply-missing are listed SEPARATELY. They need
+        # different actions — "pick which one" versus "this person is not on
+        # Discord" — and collapsing them hides the easy fix in the long list.
+        if summary["ambiguous"]:
+            lines.append("\n**Ambiguous — say which with `/chain link`:**")
+            for a in summary["ambiguous"]:
+                who = ", ".join(f"<@{c}>" for c in a["candidates"])
+                lines.append(f"· {a['name']} `[{a['member_id']}]` → {who}")
+        if summary["unlinked"]:
+            lines.append("\n**No match — link by hand, or they are not on Discord:**")
+            lines.append(", ".join(f"{u['name']} `[{u['member_id']}]`"
+                                   for u in summary["unlinked"])[:1500])
+        await interaction.response.send_message(
+            embed=discord.Embed(title=f"Chain Watch links — {slug}",
+                                description="\n".join(lines)[:4000], color=0x3498DB),
+            ephemeral=True)
+
+    @chain.command(name="link-sync", description="Re-run the automatic matching now")
+    @app_commands.describe(faction="Which faction (optional when only one is configured)")
+    async def link_sync_cmd(interaction: discord.Interaction,
+                            faction: Optional[str] = None) -> None:
+        slug, err = _resolve(faction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        summary = await _sync(slug, interaction.guild)
+        if summary is None:
+            await interaction.followup.send(
+                f"Could not reach `{slug}`'s dashboard.", ephemeral=True)
+            return
+        await interaction.followup.send(
+            f"Matched **{summary['linked']} of {summary['total']}**. "
+            f"{len(summary['ambiguous'])} ambiguous, {len(summary['unlinked'])} unmatched — "
+            "`/chain link-status` lists them.", ephemeral=True)
+
+    @link_status_cmd.autocomplete("faction")
+    async def link_status_faction_autocomplete(interaction: discord.Interaction, current: str):
+        return _slug_choices(current)
+
+    @link_sync_cmd.autocomplete("faction")
+    async def link_sync_faction_autocomplete(interaction: discord.Interaction, current: str):
         return _slug_choices(current)
 
     @chain.command(name="refresh", description="Re-draw the board now")
