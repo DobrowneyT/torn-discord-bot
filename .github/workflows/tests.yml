@@ -1,0 +1,23 @@
+# The gate that makes the branch policy real (#783).
+#
+# ⚠️ Without CI, "PR into dev" is a naming convention rather than a check, and
+# this bot's failure mode is silence — a formatter that raises mid-tick posts
+# nothing, and nobody notices a board that stopped updating until a shift is
+# missed.
+name: tests
+
+on:
+  pull_request:
+  push:
+    branches: [dev, main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python -m pytest -q

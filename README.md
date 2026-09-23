@@ -8,6 +8,26 @@ Self-contained Discord bot that polls the Torn faction-crimes API every minute a
 
 On API errors the bot logs and **does not edit** the message — the last good state stays visible.
 
+## Branch policy
+
+`main` is what runs live. `dev` is the staging branch the test environment
+tracks. Features branch off `dev`, PR into `dev` with CI green, and an approved
+**`dev → main`** merge is what promotes. Never force-push `main`.
+
+Same policy as `DobrowneyT/torn-dashboard`, deliberately — the two repos ship
+one feature between them (Chain Watch, dashboard epic #768), and a change that
+lands live on one side while the other is still on a branch is how the board
+starts rendering a payload that does not exist yet.
+
+## Tests
+
+```bash
+python -m venv .venv && .venv/bin/pip install -r requirements.txt -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+
+CI runs the same on every PR and on pushes to `dev` and `main`.
+
 ## Phases
 
 - **Phase 1 — message format with mock data.** `mock_data.py` + `alerts.py` + `formatter.py` + `scratch/format_preview.py`.
