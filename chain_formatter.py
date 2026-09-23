@@ -27,9 +27,11 @@ COLOR_NAKED = 0xE74C3C     # red — an hour with nobody at all
 
 EMBED_TITLE = "Chain Watch"
 
-# ⚠️ Six hours, the same horizon the dashboard page warns on. One definition, so
-# the board and the page never disagree about what is unfilled.
-GAP_HORIZON_HOURS = 6
+# ⚠️ A FALLBACK, not the definition. The horizon arrives in the payload
+# (`gap_horizon_hours`, dashboard #782) precisely so the board and the page
+# cannot disagree about what is unfilled; this value only covers a payload that
+# predates that field, and a board drawn from it should be treated as suspect.
+GAP_HORIZON_FALLBACK = 6
 
 LEGEND = (
     "🟢 covered  ·  🟡 one of two  ·  🔴 nobody  ·  ✈️ may not land in time  ·  ⭐ double tickets"
@@ -41,10 +43,48 @@ def _ts(ms: int, style: str = "t") -> str:
     return f"<t:{int(ms // 1000)}:{style}>"
 
 
+def _who(watcher: Dict) -> str:
+    """
+    How a watcher is named on the board.
+
+    ⚠️ `Name [ID]` when we have no Discord link (#784), never a bare name.
+    Leadership has to be able to see exactly who to chase, and the id is what
+    tells two members with similar display names apart — the same reason every
+    sign-up keys on the Torn id rather than the name the sheet used.
+    """
+    name = watcher.get("name") or "unknown"
+    member_id = watcher.get("member_id")
+    discord_id = watcher.get("discord_id")
+    if discord_id:
+        return f"<@{discord_id}>"
+    return f"{name} [{member_id}]" if member_id else name
+
+
 def _tct(ms: int) -> str:
     """TCT is UTC. Canonical, because it is what Torn shows."""
     from datetime import datetime, timezone
     return datetime.fromtimestamp(ms / 1000, tz=timezone.utc).strftime("%H:%M")
+
+
+def _travel_phrase(travel: Dict) -> str:
+    """
+    What we can honestly say about somebody in the air.
+
+    ⚠️ The dashboard serves the departure and the plane, never an arrival —
+    Torn publishes no arrival time for a traveller, so an ETA has to be counted
+    from a take-off that was witnessed. `arrival` is filled in by the poller
+    from flight.py (#785) when it can be; when it cannot, we say so. A
+    fabricated landing time is worse than an absent one, because a lead waits
+    on it.
+    """
+    where = travel.get("destination") or "somewhere"
+    if travel.get("state") == "Abroad":
+        return f"🛬 in {where}"
+    arrival = travel.get("arrival")
+    if arrival and arrival.get("earliest") and arrival.get("latest"):
+        return (f"✈️ {where} "
+                f"(lands {_ts(arrival['earliest'])}–{_ts(arrival['latest'])})")
+    return f"✈️ {where} (arrival unknown)"
 
 
 def _hour_line(hour: Dict, slots_per_hour: int) -> str:
@@ -62,14 +102,10 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
     names = []
     for w in watchers:
         travel = w.get("travel")
-        # ⚠️ Flying is shown ON the row, with the band rather than a point —
-        # Torn's flight times carry variance and a stated minute is a promise we
+        # ⚠️ Flying is shown ON the row, as a band rather than a point — Torn's
+        # flight times carry variance and a stated minute is a promise we
         # cannot keep.
-        if travel:
-            names.append(f"{w['name']} ✈️ {travel['destination']} "
-                         f"(lands {_ts(travel['eta_earliest'])}–{_ts(travel['eta_latest'])})")
-        else:
-            names.append(w["name"])
+        names.append(f"{_who(w)} {_travel_phrase(travel)}" if travel else _who(w))
 
     if open_slots:
         names.append("*nobody signed up*" if open_slots == slots_per_hour
@@ -79,13 +115,14 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
             + ", ".join(names))
 
 
-def build_board(watch: Dict, *, now_ms: int) -> List[discord.Embed]:
+def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24) -> List[discord.Embed]:
     """The standing board: what is covered, what is not, and where the chain is going."""
     event = watch.get("event", {})
     slots_per_hour = int(event.get("slots_per_hour", 2))
     hours = [h for h in watch.get("hours", []) if h["hour_start"] + 3_600_000 > now_ms]
 
-    horizon_ms = now_ms - (now_ms % 3_600_000) + GAP_HORIZON_HOURS * 3_600_000
+    horizon_hours = int(watch.get("gap_horizon_hours") or GAP_HORIZON_FALLBACK)
+    horizon_ms = now_ms - (now_ms % 3_600_000) + horizon_hours * 3_600_000
     soon = [h for h in hours if h["hour_start"] < horizon_ms]
     # ⚠️ Counts SLOTS, not hours. An hour holding one of two watchers is one
     # unfilled slot — not zero, and not two.
@@ -119,12 +156,12 @@ def build_board(watch: Dict, *, now_ms: int) -> List[discord.Embed]:
     lines.append("")
     if open_soon:
         lines.append(f"**{open_soon} slot{'' if open_soon == 1 else 's'} unfilled "
-                     f"in the next {GAP_HORIZON_HOURS} hours**")
+                     f"in the next {horizon_hours} hours**")
     else:
-        lines.append(f"**Every slot in the next {GAP_HORIZON_HOURS} hours is covered.**")
+        lines.append(f"**Every slot in the next {horizon_hours} hours is covered.**")
     lines.append("")
 
-    for h in hours[:24]:
+    for h in hours[:hours_shown]:
         lines.append(_hour_line(h, slots_per_hour))
 
     embed = discord.Embed(
@@ -145,7 +182,7 @@ def build_shift_ping(shift: Dict, *, lead_in_minutes: int = 5) -> str:
     point is to give them or a leader time to do something about it.
     """
     when = _ts(shift["hour_start"])
-    mention = f"<@{shift.get('discord_id')}>" if shift.get("discord_id") else f"**{shift['name']}**"
+    mention = _who(shift)
     bonus = " ⭐ *double tickets this hour*" if shift.get("bonus") else ""
 
     partner = shift.get("partner")
@@ -154,8 +191,7 @@ def build_shift_ping(shift: Dict, *, lead_in_minutes: int = 5) -> str:
     travel = shift.get("travel")
     if travel:
         return (f"{mention} your chain watch starts at {when} and you are "
-                f"**in the air to {travel['destination']}** — landing "
-                f"{_ts(travel['eta_earliest'])}–{_ts(travel['eta_latest'])}. "
+                f"**away** — {_travel_phrase(travel)}. "
                 f"If that is too late, drop the slot on the dashboard so somebody can cover it.")
 
     chain = shift.get("chain") or {}

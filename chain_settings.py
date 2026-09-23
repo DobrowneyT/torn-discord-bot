@@ -19,6 +19,12 @@ dashboard control; the bot will show the change on its next refresh.
 ⚠️ The gap horizon is the sharpest case: the board and the dashboard page must
 never disagree about what is unfilled, so the horizon arrives **in the payload**
 rather than being configured twice.
+
+⚠️ **Every setting is per tenant** (#783). Five factions share one bot, and a
+board cadence tuned for a faction mid-chain must not change another faction's
+quiet board. `board_channel_id` makes this obvious — one value for five
+factions would post every board into one channel — but it is just as true of
+the lead times, which are about when a given faction's members want waking.
 """
 
 import logging
@@ -87,24 +93,74 @@ SETTINGS: Dict[str, Setting] = {
 }
 
 
-def _store() -> Dict[str, Any]:
-    return state.load_state().get(STATE_KEY, {}) or {}
+#: The slug used before settings were scoped per tenant, and where the old flat
+#: block is migrated to. See `_migrated`.
+LEGACY_SLUG = "default"
 
 
-def all_settings() -> Dict[str, Any]:
+def _migrated(st: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Lift a pre-#783 flat settings block into the per-tenant shape.
+
+    ⚠️ **Migrated, not reset.** The flat block holds the board channel id and
+    whatever cadence somebody tuned while their leaders watched; dropping it
+    silently would leave the bot posting nowhere with no error, which reads as
+    the bot being broken rather than as a config that moved.
+
+    The old values land under `LEGACY_SLUG`, which `adopt_legacy` then hands to
+    whichever tenant is configured first.
+    """
+    block = st.get(STATE_KEY)
+    if not isinstance(block, dict):
+        return {}
+    # Already per-tenant: every value is itself a dict of settings.
+    if all(isinstance(v, dict) for v in block.values()):
+        return block
+    return {LEGACY_SLUG: {k: v for k, v in block.items() if k in SETTINGS}}
+
+
+def _store() -> Dict[str, Dict[str, Any]]:
+    return _migrated(state.load_state())
+
+
+def _for(slug: str) -> Dict[str, Any]:
+    return _store().get(slug, {}) or {}
+
+
+def adopt_legacy(slug: str) -> bool:
+    """
+    Give a newly configured tenant the pre-#783 flat settings, once.
+
+    Returns True when something was adopted. ⚠️ Only the FIRST tenant gets them:
+    copying one faction's channel id into five tenants would point every board
+    at one channel, which looks like the bot ignoring its config.
+    """
+    store = _store()
+    legacy = store.pop(LEGACY_SLUG, None)
+    if not legacy:
+        return False
+    store.setdefault(slug, {}).update(legacy)
+    st = state.load_state()
+    st[STATE_KEY] = store
+    state.save_state(st)
+    log.info("adopted pre-#783 settings into tenant %s", slug)
+    return True
+
+
+def all_settings(slug: str) -> Dict[str, Any]:
     """Every setting with its effective value — stored where set, default otherwise."""
-    stored = _store()
+    stored = _for(slug)
     return {k: stored.get(k, s.default) for k, s in SETTINGS.items()}
 
 
-def get(key: str) -> Any:
+def get(slug: str, key: str) -> Any:
     s = SETTINGS.get(key)
     if s is None:
         raise KeyError(key)
-    return _store().get(key, s.default)
+    return _for(slug).get(key, s.default)
 
 
-def set_value(key: str, raw: Any) -> Tuple[bool, str]:
+def set_value(slug: str, key: str, raw: Any) -> Tuple[bool, str]:
     """Validate and persist. Returns (ok, message) — the message is what Discord shows."""
     s = SETTINGS.get(key)
     if s is None:
@@ -112,18 +168,22 @@ def set_value(key: str, raw: Any) -> Tuple[bool, str]:
     value, err = s.coerce(raw)
     if err:
         return False, err
+    store = _store()
+    store.setdefault(slug, {})[key] = value
     st = state.load_state()
-    st.setdefault(STATE_KEY, {})[key] = value
+    st[STATE_KEY] = store
     state.save_state(st)
-    log.info("chain setting %s = %r", key, value)
-    return True, f"`{key}` is now **{value}**."
+    log.info("chain setting %s/%s = %r", slug, key, value)
+    return True, f"`{key}` is now **{value}** for `{slug}`."
 
 
-def reset(key: str) -> Tuple[bool, str]:
+def reset(slug: str, key: str) -> Tuple[bool, str]:
     s = SETTINGS.get(key)
     if s is None:
         return False, f"No setting called `{key}`."
+    store = _store()
+    store.get(slug, {}).pop(key, None)
     st = state.load_state()
-    st.get(STATE_KEY, {}).pop(key, None)
+    st[STATE_KEY] = store
     state.save_state(st)
-    return True, f"`{key}` is back to its default, **{s.default}**."
+    return True, f"`{key}` is back to its default for `{slug}`, **{s.default}**."

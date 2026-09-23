@@ -8,6 +8,24 @@ Self-contained Discord bot that polls the Torn faction-crimes API every minute a
 
 On API errors the bot logs and **does not edit** the message — the last good state stays visible.
 
+## Chain Watch: adding a faction
+
+The bot polls each faction's dashboard rather than Torn, so a faction costs a
+URL and a token — no extra API key and no extra share of anybody's rate limit.
+
+1. On the dashboard box: `node db/chain-watch-token.mjs <slug>`
+2. Put that value in this bot's environment as `CHAIN_WATCH_TOKEN_<SLUG>` and
+   restart. ⚠️ **Never through a slash command** — command arguments are visible
+   client-side and land in logs.
+3. In the faction's Discord server: `/chain tenant add slug:<slug>
+   base_url:https://<slug>.monchoon.me board_channel:#chain`
+
+`/chain tenant list` shows every faction and flags any whose token is missing.
+Everything else — cadence, lead times, channels — is `/chain set`, per faction,
+live.
+
+The OC watcher is separate and single-faction; none of this touches it.
+
 ## Branch policy
 
 `main` is what runs live. `dev` is the staging branch the test environment

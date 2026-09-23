@@ -29,6 +29,7 @@ from dotenv import load_dotenv
 import chain_formatter
 import chain_mock
 import chain_settings
+import chain_tenants
 import state
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -40,9 +41,15 @@ STATE_KEY = "chain_preview_message_id"
 def main() -> None:
     load_dotenv(os.path.join(_PARENT, ".env"))
     token = os.environ.get("DISCORD_BOT_TOKEN")
+    # ⚠️ Settings are per faction now (#783). The preview uses the first
+    # configured tenant, or a bare "preview" scope when none is — this script
+    # exists to iterate on wording before any faction is wired up, so requiring
+    # a tenant first would put the setup in the wrong order.
+    tenants = chain_tenants.all_tenants()
+    slug = tenants[0].slug if tenants else "preview"
     # The board channel setting wins when set, so a leader can move the preview
     # from Discord rather than by editing .env.
-    channel_id = chain_settings.get("board_channel_id") or int(
+    channel_id = chain_settings.get(slug, "board_channel_id") or int(
         os.environ.get("DISCORD_CHANNEL_ID") or 0)
     if not token or not channel_id:
         raise SystemExit("Set DISCORD_BOT_TOKEN and DISCORD_CHANNEL_ID in .env "
@@ -53,7 +60,8 @@ def main() -> None:
     now_ms = now * 1000
 
     watch = chain_mock.mock_watch(now)
-    embeds = chain_formatter.build_board(watch, now_ms=now_ms)
+    embeds = chain_formatter.build_board(
+        watch, now_ms=now_ms, hours_shown=chain_settings.get(slug, "board_hours_shown"))
 
     intents = discord.Intents.default()
     client = discord.Client(intents=intents)
@@ -81,7 +89,7 @@ def main() -> None:
                 log.info("posted board %s", msg.id)
 
             if want_pings:
-                lead = chain_settings.get("shift_lead_minutes")
+                lead = chain_settings.get(slug, "shift_lead_minutes")
                 await channel.send(chain_formatter.build_shift_ping(
                     chain_mock.mock_shift_ping(now), lead_in_minutes=lead))
                 await channel.send(chain_formatter.build_shift_ping(

@@ -95,11 +95,12 @@ def test_the_mock_still_renders():
 
 
 def test_shift_ping_mentions_when_linked_and_names_when_not():
-    base = {"name": "Goosey", "hour_start": TOP + HOUR, "chain": {"current": 61_204}}
+    base = {"name": "Goosey", "member_id": "873341",
+            "hour_start": TOP + HOUR, "chain": {"current": 61_204}}
     assert "<@42>" in f.build_shift_ping({**base, "discord_id": 42})
-    # ⚠️ Not a bare name: leadership needs to see WHO to chase, and the id is
-    # what identifies them when two members share a display name (#784).
-    assert "**Goosey**" in f.build_shift_ping(base)
+    # ⚠️ `Name [ID]`, not a bare name: leadership needs to see WHO to chase, and
+    # the id is what tells two members with similar display names apart (#784).
+    assert "Goosey [873341]" in f.build_shift_ping(base)
 
 
 def test_shift_ping_says_when_you_are_alone():
