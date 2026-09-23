@@ -24,6 +24,32 @@ URL and a token — no extra API key and no extra share of anybody's rate limit.
 Everything else — cadence, lead times, channels — is `/chain set`, per faction,
 live.
 
+## Chain Watch: who is who
+
+The bot has to know which Discord user is which Torn member, or a shift ping
+reaches nobody. It works this out **automatically** — on startup, whenever
+somebody joins the server, and on demand with `/chain link-sync`:
+
+1. an id in the Discord name — `Goosey [873341]`. Exact.
+2. the Torn name matching the display name or username, ignoring case and
+   punctuation.
+3. the Torn name contained in one of them — `xX_Goosey_Xx`. Lower confidence,
+   so it needs a name of at least four characters and exactly one hit.
+
+⚠️ **Anything ambiguous is left unlinked on purpose.** Two people who could both
+be the same member means guessing, and a wrong link pings the wrong person about
+somebody else's 3am shift — with no way for them to know it was not for them.
+Unlinked is visible in `/chain link-status`; wrong is not.
+
+`/chain link @user <torn_id>` is the escape hatch for the rest. ⚠️ A manual link
+always beats the auto-match and survives a re-sync — otherwise the one
+correction leadership bothered to make is silently undone on the next restart.
+
+⚠️ **The map is standing state, not per-event.** Link somebody once and every
+future chain resolves through it; nothing re-runs when the sign-up sheet
+changes. Members with no link render as `Name [ID]` so leadership can see who to
+chase.
+
 The OC watcher is separate and single-faction; none of this touches it.
 
 ## Branch policy
