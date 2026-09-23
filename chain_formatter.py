@@ -115,7 +115,8 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
             + ", ".join(names))
 
 
-def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24) -> List[discord.Embed]:
+def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
+                stale: bool = False) -> List[discord.Embed]:
     """The standing board: what is covered, what is not, and where the chain is going."""
     event = watch.get("event", {})
     slots_per_hour = int(event.get("slots_per_hour", 2))
@@ -169,8 +170,35 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24) -> List[disc
         description="\n".join(lines)[:4000],
         color=color,
     )
-    embed.set_footer(text="Times shown in TCT and your own timezone · sign up on the dashboard")
+    # ⚠️ A failed poll leaves the LAST GOOD board up, marked. Blanking it would
+    # read as "nobody is signed up", which is the one message that must never be
+    # wrong — and an unmarked stale board is worse still, because it reads as
+    # current.
+    footer = "Times shown in TCT and your own timezone · sign up on the dashboard"
+    if stale:
+        footer = "⚠️ Dashboard unreachable — this board is the last good reading · " + footer
+    embed.set_footer(text=footer)
     return [embed]
+
+
+def build_gap_ping(hour: Dict, open_slots: int, *, stage: str = "first",
+                   last_call_hours: int = 2, quiet_when_covered: bool = False) -> str:
+    """
+    One message about one unfilled hour.
+
+    ⚠️ Sent at most twice per hour — once on entering the horizon, once as a
+    last call — and never as a recurring status line. The board already carries
+    the standing state; this is for the gap somebody has to act on.
+    """
+    when = f"`{_tct(hour['hour_start'])}` TCT {_ts(hour['hour_start'])}"
+    bonus = " ⭐ *double tickets*" if hour.get("bonus") else ""
+    slots = f"{open_slots} slot{'' if open_slots == 1 else 's'}"
+    if stage == "last-call":
+        # ⚠️ Says how long is left, because "soon" is what people scroll past.
+        return (f"⏰ **Last call** — {when} still needs {slots}"
+                f"{bonus}. It starts in under {last_call_hours} hours.")
+    nobody = " — **nobody at all**" if not hour.get("watchers") else ""
+    return f"🔴 {when} needs {slots}{nobody}{bonus}. Sign up on the dashboard."
 
 
 def build_shift_ping(shift: Dict, *, lead_in_minutes: int = 5) -> str:

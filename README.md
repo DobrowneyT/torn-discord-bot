@@ -8,6 +8,40 @@ Self-contained Discord bot that polls the Torn faction-crimes API every minute a
 
 On API errors the bot logs and **does not edit** the message — the last good state stays visible.
 
+## Chain Watch: running it
+
+```bash
+.venv/bin/python chain_bot.py
+```
+
+Separate process from the OC watcher (`bot.py`), deliberately — the OC watcher
+has its own key, cadence and channel and has been working for months; there is
+no reason for the two to move together.
+
+⚠️ **The members intent must be enabled** in the Discord developer portal. It is
+what populates `guild.members`, and without it the guild looks empty, nobody is
+auto-linked, and there is no error to explain why.
+
+What it does each cycle, per faction:
+
+- **draws the board**, editing one standing message in place. ⚠️ A failed poll
+  leaves the last good board up with a staleness note rather than blanking it —
+  an empty board reads as "nobody is signed up", which is the one message that
+  must never be wrong.
+- **pings a watcher** `shift_lead_minutes` before their hour.
+- **pings a flyer early**, at `flight_lead_minutes`, when the landing band says
+  they may not make it. Five minutes' notice is useless to somebody over the
+  Atlantic; the point is that it arrives while they or a leader can still act.
+- **announces an unfilled slot** inside the horizon the dashboard serves —
+  ⚠️ **twice at most**: once on entering the horizon, once as a last call two
+  hours out, then silence. A six-hour horizon re-checked every five minutes
+  would be 72 identical messages about the same empty 3am slot, and a channel
+  that mutes the bot is worse than no bot.
+
+⚠️ Every ping is recorded so it fires once, and the record **survives a
+restart** — otherwise every redeploy re-pings everybody, and redeploys happen
+most while the thing is being tuned. Nothing is sent once a chain has ended.
+
 ## Chain Watch: adding a faction
 
 The bot polls each faction's dashboard rather than Torn, so a faction costs a
