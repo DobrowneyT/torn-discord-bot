@@ -11,7 +11,8 @@ import asyncio
 import discord
 import pytest
 
-import chain_bot
+import chain_bot_sender
+import chain_runtime
 import chain_settings
 import chain_tenants
 
@@ -55,7 +56,7 @@ class FakeClient:
 
 
 def sender(channels):
-    return chain_bot.DiscordSender(FakeClient(channels))
+    return chain_bot_sender.DiscordSender(FakeClient(channels))
 
 
 def test_posts_when_there_is_no_message_yet():
@@ -111,10 +112,10 @@ def test_the_interval_is_the_shortest_across_factions():
     chain_tenants.add("tnl", "https://t.example.com", 2, 20)
     chain_settings.set_value("forge", "board_refresh_seconds", "120")
     chain_settings.set_value("tnl", "board_refresh_seconds", "600")
-    bot = chain_bot.ChainBot.__new__(chain_bot.ChainBot)
-    assert chain_bot.ChainBot._interval(bot) == 120
+    rt = chain_runtime.ChainRuntime.__new__(chain_runtime.ChainRuntime)
+    assert chain_runtime.ChainRuntime.interval(rt) == 120
 
 
 def test_the_interval_has_a_default_with_no_factions():
-    bot = chain_bot.ChainBot.__new__(chain_bot.ChainBot)
-    assert chain_bot.ChainBot._interval(bot) == 300
+    rt = chain_runtime.ChainRuntime.__new__(chain_runtime.ChainRuntime)
+    assert chain_runtime.ChainRuntime.interval(rt) == 300

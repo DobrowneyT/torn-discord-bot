@@ -10,13 +10,31 @@ On API errors the bot logs and **does not edit** the message — the last good s
 
 ## Chain Watch: running it
 
+Two ways, and the choice is about the **Discord token**, not about tidiness.
+
+**On the bot you already have** (recommended — one token, one process). Set any
+`CHAIN_WATCH_TOKEN_*` in `.env` and `bot.py` picks Chain Watch up on its next
+start. Nothing else changes; with no token set, the OC watcher behaves exactly as
+before.
+
+```bash
+.venv/bin/python bot.py
+```
+
+**As its own bot**, with a Discord token nothing else is using:
+
 ```bash
 .venv/bin/python chain_bot.py
 ```
 
-Separate process from the OC watcher (`bot.py`), deliberately — the OC watcher
-has its own key, cadence and channel and has been working for months; there is
-no reason for the two to move together.
+⚠️ **Never both on the same token.** Two processes sharing one token open two
+gateway connections, and Discord routes each interaction to only ONE of them —
+so the OC watcher's "Manage CPR overrides" button silently stops working about
+half the time, with nothing logged. That failure looks like Discord being flaky
+and is nearly impossible to diagnose from the symptom.
+
+⚠️ A Chain Watch misconfiguration never takes the OC watcher down: `setup` and
+`start` are guarded, and a failure logs and leaves the OC watcher running.
 
 ⚠️ **The members intent must be enabled** in the Discord developer portal. It is
 what populates `guild.members`, and without it the guild looks empty, nobody is
