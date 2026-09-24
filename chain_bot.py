@@ -15,7 +15,7 @@ import asyncio
 import logging
 import os
 import time
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 import discord
 from discord import app_commands
@@ -71,8 +71,29 @@ class DiscordSender(chain_watcher.Sender):
             log.warning("could not send to %s: %s", channel_id, e)
 
 
+def guild_ids_from_env() -> List[int]:
+    """
+    ⚠️ Guild-scoped command sync, and it matters more than it looks.
+
+    A GLOBAL sync (no guild) is propagated by Discord over up to an hour. During
+    that hour the commands simply are not there — no error, nothing in the log,
+    just a bot that appears broken to whoever is watching. Scoping the sync to
+    named guilds is effectively instant, which is what anybody setting this up
+    or demoing it to their leaders actually needs.
+
+    Set CHAIN_GUILD_IDS to a comma-separated list while testing. Leave it unset
+    for a global sync once the command set has settled.
+    """
+    raw = os.environ.get("CHAIN_GUILD_IDS") or ""
+    out = []
+    for part in raw.replace(" ", "").split(","):
+        if part.isdigit():
+            out.append(int(part))
+    return out
+
+
 class ChainBot(discord.Client):
-    def __init__(self, lead_role_id: int = 0):
+    def __init__(self, lead_role_id: int = 0, guild_ids: Optional[List[int]] = None):
         intents = discord.Intents.default()
         # ⚠️ The members intent is required for identity matching (#784) — it is
         # what populates `guild.members`. Without it enabled in the developer
@@ -82,6 +103,7 @@ class ChainBot(discord.Client):
         super().__init__(intents=intents)
         self.tree = app_commands.CommandTree(self)
         self.lead_role_id = lead_role_id
+        self.guild_ids = guild_ids or []
         self.watcher = chain_watcher.ChainWatcher(DiscordSender(self))
         self._loop_task: Optional[asyncio.Task] = None
 
@@ -89,7 +111,19 @@ class ChainBot(discord.Client):
         chain_commands.register(self.tree, lead_role_id=self.lead_role_id,
                                 on_change=self.refresh_now)
         chain_link_sync.attach(self)
-        await self.tree.sync()
+        if self.guild_ids:
+            # ⚠️ copy_global_to, then sync per guild. Registering the commands
+            # only against one guild would make a second faction's server
+            # silently command-less.
+            for gid in self.guild_ids:
+                guild = discord.Object(id=gid)
+                self.tree.copy_global_to(guild=guild)
+                await self.tree.sync(guild=guild)
+            log.info("commands synced to %d guild(s) — instant", len(self.guild_ids))
+        else:
+            await self.tree.sync()
+            log.info("commands synced globally — Discord may take up to an hour "
+                     "to show them; set CHAIN_GUILD_IDS to make this instant")
 
     async def on_ready(self) -> None:
         log.info("chain bot ready as %s, %d guild(s)", self.user, len(self.guilds))
@@ -137,7 +171,8 @@ def main() -> None:
     if not token:
         raise SystemExit("DISCORD_BOT_TOKEN must be set in .env")
     lead_role_id = int(os.environ.get("CHAIN_LEAD_ROLE_ID") or 0)
-    ChainBot(lead_role_id=lead_role_id).run(token, log_handler=None)
+    ChainBot(lead_role_id=lead_role_id,
+             guild_ids=guild_ids_from_env()).run(token, log_handler=None)
 
 
 if __name__ == "__main__":
