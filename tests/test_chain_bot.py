@@ -119,3 +119,24 @@ def test_the_interval_is_the_shortest_across_factions():
 def test_the_interval_has_a_default_with_no_factions():
     rt = chain_runtime.ChainRuntime.__new__(chain_runtime.ChainRuntime)
     assert chain_runtime.ChainRuntime.interval(rt) == 300
+
+
+# ── command sync scope ───────────────────────────────────────────────────────
+
+def test_guild_ids_are_read_from_the_environment(monkeypatch):
+    # ⚠️ Why this exists: a global sync takes up to an hour to propagate, during
+    # which the commands are simply absent with no error anywhere. That hour is
+    # spent believing the bot is broken.
+    monkeypatch.setenv("CHAIN_GUILD_IDS", "111, 222")
+    assert chain_runtime.guild_ids_from_env() == [111, 222]
+
+
+def test_no_guild_ids_means_a_global_sync(monkeypatch):
+    monkeypatch.delenv("CHAIN_GUILD_IDS", raising=False)
+    assert chain_runtime.guild_ids_from_env() == []
+
+
+def test_junk_in_the_guild_list_is_ignored_not_crashed_on(monkeypatch):
+    # A stray comma or a pasted channel name must not stop the bot booting.
+    monkeypatch.setenv("CHAIN_GUILD_IDS", "111,,not-an-id,222,")
+    assert chain_runtime.guild_ids_from_env() == [111, 222]
