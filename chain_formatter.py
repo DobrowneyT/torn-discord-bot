@@ -111,7 +111,12 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
         names.append("*nobody signed up*" if open_slots == slots_per_hour
                      else f"*{open_slots} open*")
 
-    return (f"{mark} `{_tct(hour['hour_start'])}` {_ts(hour['hour_start'])}{bonus} — "
+    # ⚠️ The unit is spelled out on EVERY row, not just in the footer. The board
+    # scrolls for a twelve-day chain and gets screenshotted a line at a time, so
+    # a footer is out of sight for all but the first few hours — and a bold time
+    # with no unit reads as "some timezone", most likely the reader's own, which
+    # is the number sitting right beside it.
+    return (f"{mark} `{_tct(hour['hour_start'])}` TCT {_ts(hour['hour_start'])}{bonus} — "
             + ", ".join(names))
 
 
@@ -140,7 +145,7 @@ def _hour_lines(hours: List[Dict], slots_per_hour: int) -> List[str]:
         else:
             first, last = run[0], run[-1]
             out.append(
-                f"🔴 `{_tct(first['hour_start'])}`–`{_tct(last['hour_start'])}` "
+                f"🔴 `{_tct(first['hour_start'])}`–`{_tct(last['hour_start'])}` TCT "
                 f"{_ts(first['hour_start'])}–{_ts(last['hour_start'])} — "
                 f"*{len(run)} hours, nobody signed up*")
         run.clear()
@@ -247,7 +252,7 @@ def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[st
         slots = f"{open_slots} slot{'' if open_slots == 1 else 's'}"
         bonus = " ⭐ *double tickets*" if hour.get("bonus") else ""
         nobody = " — **nobody at all**" if not hour.get("watchers") else ""
-        when = f"`{_tct(hour['hour_start'])}` · {_ts(hour['hour_start'])}"
+        when = f"`{_tct(hour['hour_start'])}` TCT · {_ts(hour['hour_start'])}"
         if stage == "last-call":
             lines.append(f"⏰ {when} — {slots}{nobody}{bonus}, "
                          f"**starts in under {last_call_hours} hours**")
@@ -256,7 +261,10 @@ def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[st
 
     subject = "hour still needs" if len(gaps) == 1 else "hours still need"
     return (f"**{len(gaps)} {subject} cover** "
-            f"— times in TCT, then your own · sign up on the dashboard\n"
+            # Each line carries TCT itself now, so the header only has to
+            # explain the SECOND time — which cannot be labelled, because
+            # Discord renders it in the reader's own zone, client-side.
+            f"— second time is your own · sign up on the dashboard\n"
             + "\n".join(lines))
 
 

@@ -109,3 +109,25 @@ def test_shift_ping_says_when_you_are_alone():
     paired = f.build_shift_ping({"name": "A", "hour_start": TOP + HOUR,
                                  "partner": {"name": "B"}})
     assert "only watcher" not in paired and "**B**" in paired
+
+
+def test_every_board_row_names_TCT():
+    # ⚠️ On every row, not just the footer. The board scrolls for a twelve-day
+    # chain and gets screenshotted a line at a time, so a footer is out of
+    # sight for all but the first few hours — and a bold time with no unit
+    # reads as "some timezone", most likely the reader's own, which is the
+    # number sitting right beside it.
+    e = board([hour(1, [w("A")]), hour(2, [w("A"), w("B")])])
+    # ⚠️ Require the backtick: the LEGEND line also starts with 🟢 and would
+    # otherwise be asserted against, failing for a reason unrelated to the rows.
+    rows = [l for l in e.description.splitlines()
+            if l.startswith(("🟢", "🟡", "🔴")) and "`" in l]
+    assert rows, "no hour rows rendered"
+    for row in rows:
+        assert " TCT " in row, row
+
+
+def test_a_collapsed_run_names_TCT_too():
+    e = board([hour(1, []), hour(2, []), hour(3, [])])
+    run = [l for l in e.description.splitlines() if "hours, nobody signed up" in l]
+    assert len(run) == 1 and " TCT " in run[0]
