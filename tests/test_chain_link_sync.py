@@ -148,3 +148,61 @@ def test_a_join_in_an_unwatched_guild_is_ignored(monkeypatch, two_factions):
     joiner.guild = FakeGuild(999, [])
     asyncio.run(client.listeners[0][1](joiner))
     assert called == []
+
+
+# ── attaching to a REAL client ───────────────────────────────────────────────
+#
+# ⚠️ These exist because the tests above did NOT catch a live AttributeError:
+# `attach` called `client.add_listener(...)`, which is a `commands.Bot` method
+# that a plain `discord.Client` does not have. FakeClient had one only because
+# I wrote it, so the suite was testing the fake. Anything that touches the
+# discord.py API surface gets tested against the real class from here on.
+
+def test_attach_works_on_a_plain_discord_client(monkeypatch, two_factions):
+    import discord
+    client = discord.Client(intents=discord.Intents.default())
+    cls.attach(client)          # must not raise — this is the exact live failure
+    assert callable(getattr(client, "on_member_join", None))
+
+
+def test_attach_works_on_a_commands_bot_too():
+    import discord
+    from discord.ext import commands
+    bot = commands.Bot(command_prefix="!", intents=discord.Intents.default())
+    cls.attach(bot)
+    assert bot.extra_events.get("on_member_join")
+
+
+def test_attach_chains_the_hosts_own_handler_rather_than_replacing_it(
+        monkeypatch, two_factions):
+    # ⚠️ discord.Client dispatches by looking up self.on_<event>, so a bare
+    # assignment silently deletes a handler the host defined for its own
+    # reasons — and nothing would ever report it.
+    import discord
+    client = discord.Client(intents=discord.Intents.default())
+    seen = []
+
+    async def host_handler(member):
+        seen.append(member)
+
+    client.on_member_join = host_handler
+    cls.attach(client)
+
+    polled = []
+
+    async def _fetch(tenant):
+        polled.append(tenant.slug)
+        return {"members": ROSTER}
+
+    monkeypatch.setattr(chain_api, "fetch", _fetch)
+
+    joiner = FakeMember(1, "Goosey")
+    joiner.guild = FakeGuild(11, [])
+    asyncio.run(client.on_member_join(joiner))
+
+    assert seen == [joiner], "the host's own handler must still run"
+    # ⚠️ Asserting ours RAN, not that it linked anybody: a real, unconnected
+    # discord.Client has no guilds, so there is nothing to match against. The
+    # first draft of this test asserted a link and failed for that reason —
+    # which is the code being right and the expectation being wrong.
+    assert polled == ["forge"], "and ours must run too"
