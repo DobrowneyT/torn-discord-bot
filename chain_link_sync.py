@@ -80,6 +80,17 @@ def attach(client) -> None:
     ⚠️ A new arrival is exactly when the map is wrong and nobody knows it: they
     signed up on the dashboard, the bot has never seen them, and their first
     shift ping would go to a bold name instead of a mention.
+
+    ⚠️ **`add_listener` is a `commands.Bot` method and does NOT exist on a plain
+    `discord.Client`.** This raised AttributeError against the live OC watcher,
+    which is a `discord.Client` — and the unit test missed it because the fake
+    client it used had an `add_listener` the real class never had. A fake that
+    invents API is a test of the fake. Both paths are handled here, and the test
+    now attaches to a REAL `discord.Client`.
+
+    ⚠️ And the host's own handler is chained, not replaced. `discord.Client`
+    dispatches by looking up `self.on_<event>`, so a bare assignment would
+    silently delete an `on_member_join` the host defined for its own reasons.
     """
 
     async def on_member_join(member):
@@ -93,4 +104,16 @@ def attach(client) -> None:
         except Exception:                                  # noqa: BLE001
             log.exception("identity sync on join failed for %s", tenant.slug)
 
-    client.add_listener(on_member_join, "on_member_join")
+    adder = getattr(client, "add_listener", None)
+    if callable(adder):
+        adder(on_member_join, "on_member_join")
+        return
+
+    previous = getattr(client, "on_member_join", None)
+
+    async def chained(member):
+        if previous is not None:
+            await previous(member)
+        await on_member_join(member)
+
+    setattr(client, "on_member_join", chained)
