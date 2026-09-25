@@ -50,11 +50,17 @@ What it does each cycle, per faction:
 - **pings a flyer early**, at `flight_lead_minutes`, when the landing band says
   they may not make it. Five minutes' notice is useless to somebody over the
   Atlantic; the point is that it arrives while they or a leader can still act.
-- **announces an unfilled slot** inside the horizon the dashboard serves —
-  ⚠️ **twice at most**: once on entering the horizon, once as a last call two
-  hours out, then silence. A six-hour horizon re-checked every five minutes
-  would be 72 identical messages about the same empty 3am slot, and a channel
-  that mutes the bot is worse than no bot.
+- **announces unfilled slots** inside the horizon the dashboard serves, as
+  ⚠️ **one message per tick, not one per hour** — the first live run posted four
+  in a row because every hour inside the horizon entered it at once. Each hour
+  is named ⚠️ **twice at most**: once on entering the horizon, once as a last
+  call two hours out, then silence.
+
+  ⚠️ The second time on each line is the reader's own, and **cannot carry a
+  zone name**: Discord renders `<t:…:t>` client-side and the bot never learns
+  the reader's timezone. Printing one would mean printing the server's to
+  everybody — a confident, wrong label for anyone elsewhere. The header says
+  whose clock it is instead.
 
 ⚠️ **The board can also be pushed.** Set `CHAIN_NOTIFY_SOCKET` (and the matching
 `CHAIN_NOTIFY_SOCKET` on the dashboard container) and a sign-up redraws the board

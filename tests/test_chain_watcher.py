@@ -258,7 +258,7 @@ def test_announces_a_gap_once_then_once_more_as_a_last_call(monkeypatch, forge):
     s = FakeSender()
     watcher = cw.ChainWatcher(s)
     run(watcher, forge, TOP)                      # 5h out: enters the horizon
-    assert len(s.said) == 1 and "needs 2 slots" in s.said[0]["content"]
+    assert len(s.said) == 1 and "2 slots" in s.said[0]["content"]
 
     # ⚠️ Re-checked every five minutes for six hours would be 72 identical
     # messages about the same empty 3am slot.
@@ -267,7 +267,8 @@ def test_announces_a_gap_once_then_once_more_as_a_last_call(monkeypatch, forge):
     assert len(s.said) == 1
 
     run(watcher, forge, TOP + 3 * HOUR + 30 * 60_000)   # inside 2h
-    assert len(s.said) == 2 and "Last call" in s.said[1]["content"]
+    assert len(s.said) == 2
+    assert "starts in under 2 hours" in s.said[1]["content"]
 
     for m in range(5, 60, 5):
         run(watcher, forge, TOP + 3 * HOUR + 30 * 60_000 + m * 60_000)
@@ -293,7 +294,7 @@ def test_a_half_covered_hour_is_announced_as_one_slot(monkeypatch, forge):
     serve(monkeypatch, payload([hour(5, [w("1", "A")])]))
     s = FakeSender()
     run(cw.ChainWatcher(s), forge, TOP)
-    assert "needs 1 slot" in s.said[0]["content"]
+    assert "1 slot" in s.said[0]["content"]
 
 
 def test_a_covered_hour_says_nothing(monkeypatch, forge):
@@ -350,3 +351,72 @@ def test_one_faction_blowing_up_does_not_stop_the_others(monkeypatch, forge):
     s = FakeSender()
     asyncio.run(cw.ChainWatcher(s).tick_all(NOW))
     assert [b["channel"] for b in s.boards] == [200]
+
+
+# ── batching (from the live run: four posts in a row) ────────────────────────
+
+def test_every_gap_this_tick_arrives_as_one_message(monkeypatch, forge):
+    # ⚠️ The live first run posted four separate messages, because every hour
+    # inside the horizon entered it at once. Four posts in a row is how a
+    # channel learns to mute the bot — which costs more than the gaps do.
+    serve(monkeypatch, payload([hour(1, []), hour(2, [w("1", "A")]),
+                                hour(3, []), hour(4, [])]))
+    s = FakeSender()
+    run(cw.ChainWatcher(s), forge, TOP)
+    assert len(s.said) == 1
+    body = s.said[0]["content"]
+    assert "4 hours still need cover" in body
+    # ⚠️ Assert on the HOURS themselves, not on TCT labels typed by hand — the
+    # fixture epoch decides those, and a hardcoded "01:00" is a test that fails
+    # for a reason unrelated to batching. (It did, first try.)
+    for offset in (1, 2, 3, 4):
+        assert f"<t:{(TOP + offset * HOUR) // 1000}:t>" in body
+
+
+def test_one_gap_still_reads_as_english():
+    import chain_formatter as f
+    one = f.build_gap_ping([{"hour": hour(1, []), "open_slots": 2, "stage": "first"}])
+    assert "1 hour still needs cover" in one
+
+
+def test_the_header_says_whose_clock_the_second_time_is():
+    # ⚠️ The zone NAME cannot be printed: Discord renders <t:…:t> client-side
+    # and the bot never learns the reader's timezone. Printing the server's
+    # would give a member in London a confident, wrong label.
+    import chain_formatter as f
+    body = f.build_gap_ping([{"hour": hour(1, []), "open_slots": 1, "stage": "first"}])
+    assert "TCT, then your own" in body
+
+
+def test_nothing_is_sent_when_no_gap_is_new(monkeypatch, forge):
+    serve(monkeypatch, payload([hour(1, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    run(watcher, forge, TOP + 60_000)
+    assert len(s.said) == 1
+
+
+def test_a_failed_send_leaves_the_gaps_unannounced_rather_than_swallowed(
+        monkeypatch, forge):
+    # ⚠️ Marking the ledger before the send would lose every gap in a tick whose
+    # message failed — and those hours would then never be announced at all.
+    serve(monkeypatch, payload([hour(1, []), hour(2, [])]))
+
+    class Failing(FakeSender):
+        def __init__(self):
+            super().__init__()
+            self.fail = True
+
+        async def say(self, channel_id, content):
+            if self.fail:
+                raise RuntimeError("discord said no")
+            await super().say(channel_id, content)
+
+    s = Failing()
+    watcher = cw.ChainWatcher(s)
+    asyncio.run(watcher.tick_all(TOP))        # tick_all swallows the raise
+    assert s.said == []
+    s.fail = False
+    run(watcher, forge, TOP + 60_000)
+    assert len(s.said) == 1 and "2 hours still need cover" in s.said[0]["content"]

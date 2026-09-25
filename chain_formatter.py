@@ -115,6 +115,47 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
             + ", ".join(names))
 
 
+def _hour_lines(hours: List[Dict], slots_per_hour: int) -> List[str]:
+    """
+    One line per hour, except that a RUN of completely empty hours collapses
+    into one.
+
+    ⚠️ Sixteen consecutive "nobody signed up" lines is sixteen lines nobody
+    reads, and on a phone it pushes the hours that ARE covered off the screen —
+    so the board is longest and least useful exactly when coverage is worst.
+    A run says its span once.
+
+    ⚠️ Only fully-empty, non-bonus hours collapse. A half-covered hour names
+    somebody who needs a partner, and a bonus hour is a recruiting pitch; both
+    have to stay visible as themselves.
+    """
+    out: List[str] = []
+    run: List[Dict] = []
+
+    def flush() -> None:
+        if not run:
+            return
+        if len(run) == 1:
+            out.append(_hour_line(run[0], slots_per_hour))
+        else:
+            first, last = run[0], run[-1]
+            out.append(
+                f"🔴 `{_tct(first['hour_start'])}`–`{_tct(last['hour_start'])}` "
+                f"{_ts(first['hour_start'])}–{_ts(last['hour_start'])} — "
+                f"*{len(run)} hours, nobody signed up*")
+        run.clear()
+
+    for h in hours:
+        empty = not h.get("watchers") and not h.get("bonus")
+        if empty:
+            run.append(h)
+            continue
+        flush()
+        out.append(_hour_line(h, slots_per_hour))
+    flush()
+    return out
+
+
 def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
                 stale: bool = False) -> List[discord.Embed]:
     """The standing board: what is covered, what is not, and where the chain is going."""
@@ -162,8 +203,7 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
         lines.append(f"**Every slot in the next {horizon_hours} hours is covered.**")
     lines.append("")
 
-    for h in hours[:hours_shown]:
-        lines.append(_hour_line(h, slots_per_hour))
+    lines.extend(_hour_lines(hours[:hours_shown], slots_per_hour))
 
     embed = discord.Embed(
         title=f"{EMBED_TITLE} — {event.get('title', 'Chain')}",
@@ -181,24 +221,43 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     return [embed]
 
 
-def build_gap_ping(hour: Dict, open_slots: int, *, stage: str = "first",
-                   last_call_hours: int = 2, quiet_when_covered: bool = False) -> str:
+def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[str]:
     """
-    One message about one unfilled hour.
+    ONE message about every hour that needs cover this tick.
 
-    ⚠️ Sent at most twice per hour — once on entering the horizon, once as a
-    last call — and never as a recurring status line. The board already carries
-    the standing state; this is for the gap somebody has to act on.
+    ⚠️ One message per hour was four posts in a row the first time this ran
+    live, because everything inside the horizon entered it at once. Four posts
+    is how a channel learns to mute the bot, which costs more than the gaps do.
+
+    ⚠️ **The local time cannot carry a zone name.** Discord renders `<t:…:t>` in
+    each reader's own timezone, client-side — the bot never learns what that
+    zone is, and there is no timestamp style that includes it. Printing "CST"
+    would mean printing the SERVER's zone to everybody, which is worse than
+    printing nothing: a member in London would read a confident, wrong label.
+    The header says whose clock it is instead.
+
+    `gaps` is `[{hour, open_slots, stage}]`. Returns None for an empty list.
     """
-    when = f"`{_tct(hour['hour_start'])}` TCT {_ts(hour['hour_start'])}"
-    bonus = " ⭐ *double tickets*" if hour.get("bonus") else ""
-    slots = f"{open_slots} slot{'' if open_slots == 1 else 's'}"
-    if stage == "last-call":
-        # ⚠️ Says how long is left, because "soon" is what people scroll past.
-        return (f"⏰ **Last call** — {when} still needs {slots}"
-                f"{bonus}. It starts in under {last_call_hours} hours.")
-    nobody = " — **nobody at all**" if not hour.get("watchers") else ""
-    return f"🔴 {when} needs {slots}{nobody}{bonus}. Sign up on the dashboard."
+    if not gaps:
+        return None
+
+    lines = []
+    for g in gaps:
+        hour, open_slots, stage = g["hour"], g["open_slots"], g["stage"]
+        slots = f"{open_slots} slot{'' if open_slots == 1 else 's'}"
+        bonus = " ⭐ *double tickets*" if hour.get("bonus") else ""
+        nobody = " — **nobody at all**" if not hour.get("watchers") else ""
+        when = f"`{_tct(hour['hour_start'])}` · {_ts(hour['hour_start'])}"
+        if stage == "last-call":
+            lines.append(f"⏰ {when} — {slots}{nobody}{bonus}, "
+                         f"**starts in under {last_call_hours} hours**")
+        else:
+            lines.append(f"🔴 {when} — {slots}{nobody}{bonus}")
+
+    subject = "hour still needs" if len(gaps) == 1 else "hours still need"
+    return (f"**{len(gaps)} {subject} cover** "
+            f"— times in TCT, then your own · sign up on the dashboard\n"
+            + "\n".join(lines))
 
 
 def build_shift_ping(shift: Dict, *, lead_in_minutes: int = 5) -> str:

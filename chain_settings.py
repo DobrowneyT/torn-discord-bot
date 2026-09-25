@@ -91,8 +91,14 @@ SETTINGS: Dict[str, Setting] = {
         Setting("flight_lead_minutes", 60, "int",
                 "Earlier warning for a watcher in the air — five minutes' notice is "
                 "useless to someone over the Atlantic.", lo=5, hi=360),
+        # ⚠️ PINGS only. The board always renders a mention for a linked
+        # member, because a mention inside an EMBED is a blue link that does not
+        # notify anybody — so it costs nothing there and reads better. Off here
+        # is the dry run: real messages, nobody's phone buzzing.
         Setting("mention_members", True, "bool",
-                "Ping people by mention. Off posts their name without notifying."),
+                "Ping people by mention in shift alerts. Off names them instead, "
+                "without notifying. Does not affect the board, where a mention "
+                "never notifies anyway."),
         Setting("quiet_when_covered", False, "bool",
                 "Skip the gap line entirely when every slot ahead is filled."),
     ]

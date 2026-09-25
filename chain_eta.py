@@ -48,15 +48,17 @@ def _destination_for_eta(travel: Dict) -> Optional[str]:
     source of truth and is served alongside precisely for this.
     """
     description = travel.get("description") or ""
+    # ⚠️ flight.parse_destination returns the FOREIGN country in both
+    # directions, which is exactly what the flight time is looked up against.
     direction, place = flight.parse_destination(description)
     if direction in ("outbound", "inbound", "abroad") and place:
         return place
-    # ⚠️ Torn writes "Returning to Torn from South Africa", which flight.py's
-    # own prefixes do not cover — it looks for "Returning from ". Handled here
-    # rather than by editing flight.py, which the OC watcher depends on.
     marker = " from "
     if description.startswith("Returning") and marker in description:
         return description.split(marker, 1)[1].strip()
+    # ⚠️ Last resort only. The dashboard's `destination` says where somebody is
+    # HEADED, so on a flight home it is "Torn" — right for the board, useless
+    # for timing, because there is no "Torn" row in flight_info.json.
     dest = travel.get("destination")
     return None if dest in (None, "Torn") else dest
 
