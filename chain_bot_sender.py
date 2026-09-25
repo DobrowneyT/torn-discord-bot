@@ -18,6 +18,37 @@ import chain_watcher
 
 log = logging.getLogger("chain_bot_sender")
 
+#: The permissions this bot needs in a board or ping channel, and the bit each
+#: one occupies. Used to turn Discord's opaque 403 into an instruction.
+#:
+#: ⚠️ `Missing Access` (50001) means it cannot SEE the channel; `Missing
+#: Permissions` (50013) means it can see it but cannot act. Both arrive as a
+#: bare 403, and guessing between them is most of the time spent fixing this.
+REQUIRED_PERMS = [
+    ("View Channel", 1 << 10),
+    ("Send Messages", 1 << 11),
+    ("Embed Links", 1 << 14),
+    ("Read Message History", 1 << 16),
+]
+
+
+def _explain_forbidden(channel, what: str) -> str:
+    """Name the actual missing permissions rather than re-printing a traceback."""
+    name = getattr(channel, "mention", None) or getattr(channel, "name", "?")
+    try:
+        perms = channel.permissions_for(channel.guild.me)
+        value = perms.value
+    except Exception:                                      # noqa: BLE001
+        return (f"Cannot {what} in {name} — 403 from Discord. Check the channel's "
+                f"permission overrides for this bot.")
+    missing = [p for p, bit in REQUIRED_PERMS if not value & bit]
+    if not missing:
+        return (f"Cannot {what} in {name} despite holding every required "
+                f"permission — check whether the channel is in a category that "
+                f"denies the bot, or is an announcement/forum channel.")
+    return (f"Cannot {what} in {name}: missing {', '.join(missing)}. "
+            f"Edit Channel → Permissions → add this bot's role and allow them.")
+
 
 class DiscordSender(chain_watcher.Sender):
     """The real thing. Everything here is I/O; nothing here decides anything."""
@@ -45,7 +76,17 @@ class DiscordSender(chain_watcher.Sender):
                 # next tick post a SECOND standing board.
                 log.warning("could not edit board %s: %s", message_id, e)
                 return message_id
-        sent = await channel.send(embeds=embeds)
+        try:
+            sent = await channel.send(embeds=embeds)
+        except discord.Forbidden:
+            # ⚠️ Logged as an instruction, once per tick, without a traceback.
+            # This fires every cycle until somebody fixes the channel, and a
+            # repeating stack trace buries the one line that says what to do.
+            log.error("%s", _explain_forbidden(channel, "post the board"))
+            return None
+        except discord.HTTPException as e:
+            log.warning("could not post the board in %s: %s", channel_id, e)
+            return None
         return sent.id
 
     async def say(self, channel_id: int, content: str) -> None:
@@ -55,6 +96,8 @@ class DiscordSender(chain_watcher.Sender):
             return
         try:
             await channel.send(content)
+        except discord.Forbidden:
+            log.error("%s", _explain_forbidden(channel, "send a ping"))
         except discord.HTTPException as e:
             # ⚠️ Swallowed deliberately. A ping that cannot be delivered must
             # not raise into the tick and stop the other factions' boards.

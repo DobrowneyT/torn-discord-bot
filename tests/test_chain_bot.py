@@ -140,3 +140,69 @@ def test_junk_in_the_guild_list_is_ignored_not_crashed_on(monkeypatch):
     # A stray comma or a pasted channel name must not stop the bot booting.
     monkeypatch.setenv("CHAIN_GUILD_IDS", "111,,not-an-id,222,")
     assert chain_runtime.guild_ids_from_env() == [111, 222]
+
+
+# ── a 403 must say what to fix (from MonChoon's live setup) ──────────────────
+#
+# ⚠️ The live failure was `403 Forbidden (50001): Missing Access` repeating
+# every five minutes with a full traceback and no indication that the answer was
+# one checkbox — View Channel — on one channel. Decoding app_permissions by hand
+# is what it took to find that; the bot should do it.
+
+class FakePerms:
+    def __init__(self, value):
+        self.value = value
+
+
+class PermChannel(FakeChannel):
+    def __init__(self, perms_value, **kw):
+        super().__init__(**kw)
+        self._perms = perms_value
+        self.mention = "#chain-watch"
+
+        class _G:
+            me = object()
+        self.guild = _G()
+
+    def permissions_for(self, _member):
+        return FakePerms(self._perms)
+
+
+ALL_PERMS = (1 << 10) | (1 << 11) | (1 << 14) | (1 << 16)
+
+
+def test_a_forbidden_board_names_the_missing_permission(caplog):
+    # Everything except View Channel — MonChoon's exact situation.
+    ch = PermChannel(ALL_PERMS & ~(1 << 10),
+                     send_error=discord.Forbidden(_Resp(403), "Missing Access"))
+    with caplog.at_level("ERROR"):
+        assert asyncio.run(sender({1: ch}).board(1, [], None)) is None
+    msg = caplog.text
+    assert "View Channel" in msg
+    assert "Send Messages" not in msg, "only the MISSING ones, or the list is noise"
+    assert "#chain-watch" in msg
+
+
+def test_a_forbidden_ping_explains_itself_too(caplog):
+    ch = PermChannel(ALL_PERMS & ~(1 << 11),
+                     send_error=discord.Forbidden(_Resp(403), "Missing Permissions"))
+    with caplog.at_level("ERROR"):
+        asyncio.run(sender({1: ch}).say(1, "hi"))
+    assert "Send Messages" in caplog.text
+
+
+def test_a_403_with_every_permission_present_points_somewhere_else(caplog):
+    # ⚠️ Category denies, forum channels, announcement channels. Saying
+    # "missing: nothing" would be worse than useless.
+    ch = PermChannel(ALL_PERMS,
+                     send_error=discord.Forbidden(_Resp(403), "Missing Access"))
+    with caplog.at_level("ERROR"):
+        asyncio.run(sender({1: ch}).board(1, [], None))
+    assert "category" in caplog.text
+
+
+def test_a_forbidden_board_does_not_raise_into_the_tick():
+    # ⚠️ It fires every cycle until somebody fixes the channel; it must not
+    # take the other factions' boards down while it does.
+    ch = PermChannel(0, send_error=discord.Forbidden(_Resp(403), "nope"))
+    assert asyncio.run(sender({1: ch}).board(1, [], None)) is None
