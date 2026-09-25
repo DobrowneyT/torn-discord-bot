@@ -6,6 +6,8 @@ saying an uncovered hour is covered is the single worst outcome here: leadership
 stops checking the page because the channel told them it was fine.
 """
 
+import re
+
 import chain_formatter as f
 import chain_mock
 
@@ -131,3 +133,82 @@ def test_a_collapsed_run_names_TCT_too():
     e = board([hour(1, []), hour(2, []), hour(3, [])])
     run = [l for l in e.description.splitlines() if "hours, nobody signed up" in l]
     assert len(run) == 1 and " TCT " in run[0]
+
+
+# ── compact board (an embed cannot be made wider) ───────────────────────────
+#
+# ⚠️ Discord fixes the embed width; there is no API for it. A mention renders
+# as the member's SERVER NICKNAME, so a convention like
+# "MonChoon_616 [2250591] (TNLF)" is 30 characters — two of those plus the time
+# prefix is ~84 against the ~55-60 a row fits. Two watchers can therefore never
+# share a row while mentions are used, however the text is arranged.
+
+LINKED = {"member_id": "2250591", "name": "MonChoon_616",
+          "discord_id": 179518259471712256, "travel": None}
+UNLINKED = {"member_id": "873341", "name": "Goosey", "travel": None}
+
+
+def compact_board(hours):
+    return board(hours, **{}) if False else f.build_board(
+        {"event": {"title": "T", "slots_per_hour": 2},
+         "chain": None, "projection": {"measured": False},
+         "gap_horizon_hours": 6, "hours": hours},
+        now_ms=NOW, compact=True)[0]
+
+
+def test_compact_drops_the_mention_for_a_linked_member():
+    e = compact_board([hour(1, [LINKED, LINKED])])
+    row = [l for l in e.description.splitlines() if "`" in l and l.startswith("🟢")][0]
+    assert "<@" not in row
+    assert "MonChoon_616" in row
+
+
+def test_compact_keeps_the_id_for_an_UNLINKED_member():
+    # ⚠️ It is the one thing a leader needs in order to fix the link, and those
+    # are the minority of rows, so it costs little width.
+    e = compact_board([hour(1, [UNLINKED, UNLINKED])])
+    assert "Goosey [873341]" in e.description
+
+
+def _rendered(line):
+    """
+    Roughly what Discord shows.
+
+    ⚠️ `<t:1800003600:t>` is 16 characters of markup that renders as about 7
+    ("6:00 PM"), so measuring the raw string overstates every row by nine.
+    Measuring the wrong string is how a width test passes while the board still
+    wraps — or fails while it does not, which is what happened here first.
+    """
+    return re.sub(r"<t:\d+:[a-zA-Z]>", "6:00 PM", line)
+
+
+def test_compact_actually_fits_two_watchers_on_a_line():
+    # The point of the whole setting. ~55-60 is what an embed row holds.
+    e = compact_board([hour(1, [LINKED, UNLINKED])])
+    row = [l for l in e.description.splitlines() if "`" in l and l.startswith("🟢")][0]
+    shown = _rendered(row)
+    assert len(shown) < 60, f"{len(shown)} chars: {shown}"
+
+
+def test_the_mentioning_board_is_the_one_that_cannot_fit():
+    # ⚠️ Pins the reason the setting exists. A mention renders as the server
+    # NICKNAME, not the Torn name, so the rendered row is far wider than the
+    # source suggests — and no arrangement of the text fixes that.
+    nickname = "@MonChoon_616 [2250591] (TNLF)"
+    e = board([hour(1, [LINKED, LINKED])])
+    row = [l for l in e.description.splitlines() if "`" in l and l.startswith("🟢")][0]
+    shown = _rendered(row).replace("<@179518259471712256>", nickname)
+    assert len(shown) > 60, "if this ever fits, the setting has stopped earning its place"
+
+
+def test_the_default_board_still_mentions():
+    # MonChoon likes the pingable names; compact is opt-in.
+    e = board([hour(1, [LINKED, LINKED])])
+    assert "<@179518259471712256>" in e.description
+
+
+def test_compact_does_not_touch_the_shift_ping():
+    # ⚠️ The board's mention notifies nobody (embeds do not ping); the shift
+    # ping is where reaching somebody happens, and mention_members governs it.
+    assert "<@42>" in f.build_shift_ping(
+        {"name": "A", "member_id": "1", "discord_id": 42, "hour_start": TOP + HOUR})

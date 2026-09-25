@@ -62,6 +62,14 @@ What it does each cycle, per faction:
   everybody — a confident, wrong label for anyone elsewhere. The header says
   whose clock it is instead.
 
+⚠️ **An embed cannot be made wider.** Its width is fixed by the Discord client
+and there is no API for it. A mention renders as the member's *server nickname*,
+so a convention like `MonChoon_616 [2250591] (TNLF)` is 30 characters — two of
+those plus the time is ~84 against the ~55-60 a row holds, and no arrangement of
+the text fixes that. `/chain set board_compact on` swaps mentions for plain Torn
+names and fits an hour on one line. Nothing is lost: a mention inside an embed is
+a blue link that notifies nobody, and shift pings are unaffected.
+
 ⚠️ **The board can also be pushed.** Set `CHAIN_NOTIFY_SOCKET` (and the matching
 `CHAIN_NOTIFY_SOCKET` on the dashboard container) and a sign-up redraws the board
 in seconds rather than on the poll interval. Nudges are coalesced —
