@@ -77,6 +77,12 @@ SETTINGS: Dict[str, Setting] = {
                 "How often the board is re-drawn.", lo=60, hi=3600),
         Setting("board_hours_shown", 24, "int",
                 "How many upcoming hours the board lists.", lo=4, hi=72),
+        # ⚠️ The debounce for dashboard nudges. Leadership filling a rota
+        # assigns eight slots in twenty seconds; without coalescing that is
+        # eight redraws and a board that flickers while somebody works.
+        Setting("board_debounce_seconds", 5, "int",
+                "After the dashboard says a slot changed, how long to wait for "
+                "more changes before redrawing.", lo=1, hi=60),
         # ⚠️ Notification timing, which is the bot's business. The GAP HORIZON is
         # not here on purpose — it comes from the dashboard so the board and the
         # page cannot disagree about what is unfilled.

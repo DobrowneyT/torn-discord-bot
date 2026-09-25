@@ -24,6 +24,7 @@ from discord import app_commands
 
 import chain_bot_sender
 import chain_commands
+import chain_notify
 import chain_link_sync
 import chain_settings
 import chain_tenants
@@ -79,6 +80,10 @@ class ChainRuntime:
         self.watcher = chain_watcher.ChainWatcher(
             chain_bot_sender.DiscordSender(client))
         self._task: Optional[asyncio.Task] = None
+        # ⚠️ An optimisation on top of the poll loop, never a replacement. If
+        # the socket is missing or a nudge is dropped, the board is at worst one
+        # poll stale — where it was before this existed.
+        self.notify = chain_notify.NotifyServer(self._redraw_one)
 
     async def setup(self) -> None:
         chain_commands.register(self.tree, lead_role_id=self.lead_role_id,
@@ -97,12 +102,25 @@ class ChainRuntime:
             log.info("chain commands synced globally — Discord may take up to an "
                      "hour to show them; set CHAIN_GUILD_IDS to make this instant")
 
+    async def _redraw_one(self, slug: str) -> None:
+        """Redraw one faction after its quiet period."""
+        tenant = chain_tenants.get(slug)
+        if tenant is None:
+            # A nudge from a faction we do not serve. Normal on a shared box.
+            return
+        # ⚠️ Read the debounce per tenant each time rather than at construction,
+        # so `/chain set board_debounce_seconds` applies without a restart —
+        # the whole point of these being commands.
+        self.notify.debounce_seconds = chain_settings.get(slug, "board_debounce_seconds")
+        await self.watcher.tick(tenant, int(time.time() * 1000))
+
     async def start(self) -> None:
         # ⚠️ Match identities before the first board is drawn, so the first shift
         # ping after a restart is a mention rather than a bold name.
         await chain_link_sync.sync_all(self.client)
         if self._task is None:
             self._task = asyncio.create_task(self._run())
+        await self.notify.start()
 
     async def refresh_now(self) -> None:
         """Re-draw immediately after a setting changes rather than waiting out the
