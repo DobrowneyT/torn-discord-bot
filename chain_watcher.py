@@ -174,7 +174,13 @@ class ChainWatcher:
         # the channel and the dashboard page cannot disagree about what "soon"
         # means (#782).
         horizon_ms = int(payload.get("gap_horizon_hours") or 6) * HOUR_MS
-        quiet = chain_settings.get(slug, "quiet_when_covered")
+
+        # ⚠️ Collected, then sent as ONE message. One post per hour was four in
+        # a row the first time this ran live, because every hour inside the
+        # horizon entered it at once — and four posts is how a channel learns
+        # to mute the bot.
+        gaps: List[Dict] = []
+        keys: List[str] = []
 
         for hour in payload.get("hours", []):
             hour_start = hour["hour_start"]
@@ -188,17 +194,29 @@ class ChainWatcher:
             if open_slots <= 0:
                 continue
             stage = "last-call" if until <= LAST_CALL_HOURS * HOUR_MS else "first"
-            # ⚠️ A gap that was announced on entry and is still empty gets ONE
-            # more message, then silence. Re-announcing every cycle is what
-            # trains a channel to ignore the bot.
+            # ⚠️ A gap announced on entry and still empty gets ONE more message,
+            # then silence. Re-announcing every cycle is what trains a channel
+            # to ignore the bot.
             if stage == "last-call" and chain_ledger.already_sent(
                     slug, chain_ledger.gap_key(hour_start, "last-call")):
                 continue
-            await self._send_once(
-                tenant, chain_ledger.gap_key(hour_start, stage),
-                chain_formatter.build_gap_ping(
-                    hour, open_slots, stage=stage, last_call_hours=LAST_CALL_HOURS,
-                    quiet_when_covered=quiet))
+            key = chain_ledger.gap_key(hour_start, stage)
+            if chain_ledger.already_sent(slug, key):
+                continue
+            gaps.append({"hour": hour, "open_slots": open_slots, "stage": stage})
+            keys.append(key)
+
+        if not gaps:
+            return
+        content = chain_formatter.build_gap_ping(gaps, last_call_hours=LAST_CALL_HOURS)
+        if content is None:
+            return
+        await self.sender.say(tenant.pings_to, content)
+        # ⚠️ Marked only AFTER the send. Marking first would silently swallow
+        # every gap in a tick whose message failed to deliver, and those hours
+        # would then never be announced at all.
+        for key in keys:
+            chain_ledger.mark_sent(slug, key)
 
     async def _send_once(self, tenant, key: str, content: Optional[str]) -> None:
         if content is None or chain_ledger.already_sent(tenant.slug, key):

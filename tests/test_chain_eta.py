@@ -103,3 +103,41 @@ def test_in_the_air_with_no_computable_arrival_still_warns():
 def test_somebody_at_home_is_never_warned():
     assert eta.may_miss(None, T) is False
     assert eta.may_miss(travel(state="Okay"), T) is False
+
+
+# ── Torn's real travel strings (from live /v2/faction/members) ───────────────
+#
+# ⚠️ These four are copied from MonChoon's faction, not invented. The parser was
+# written against "Traveling to X", which Torn never sends, so every one of
+# them resolved to nothing — the board said "somewhere" and the band said
+# "arrival unknown", both of which read as missing data rather than a bug.
+
+def test_the_real_outbound_string_resolves():
+    band = eta.arrival_band(travel(description="Traveling from Torn to South Africa",
+                                   destination="South Africa"))
+    assert band is not None
+
+
+def test_the_real_inbound_string_times_the_country_being_left():
+    # ⚠️ "Traveling from UAE to Torn": the dashboard reports destination "Torn",
+    # which has no row in flight_info.json. The COUNTRY is what the flight time
+    # is looked up against.
+    band = eta.arrival_band(travel(description="Traveling from UAE to Torn",
+                                   destination="Torn"))
+    assert band is not None
+    one_way = flight.one_way_minutes("United Arab Emirates", "standard")
+    assert band["earliest"] < T + one_way * MIN < band["latest"]
+
+
+def test_torns_abbreviation_resolves_to_the_tables_name():
+    # ⚠️ Torn says "UAE"; flight_info.json says "United Arab Emirates". Without
+    # the alias the parse succeeds and the LOOKUP misses — same symptom, one
+    # layer deeper.
+    assert flight.canonical_destination("UAE") == "United Arab Emirates"
+    assert flight.canonical_destination("South Africa") == "South Africa"
+    assert flight.canonical_destination("Atlantis") is None
+
+
+def test_an_abroad_member_is_still_read_correctly():
+    assert eta.may_miss(travel(state="Abroad", description="In Switzerland",
+                               destination="Switzerland"), T + 999 * MIN) is True
