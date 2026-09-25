@@ -27,6 +27,7 @@ from discord.ext import tasks
 from dotenv import load_dotenv
 
 import alerts as alerts_mod
+import chain_runtime
 import enrich
 import formatter as formatter_mod
 import state as state_mod
@@ -41,8 +42,14 @@ log = logging.getLogger("oc_watcher")
 
 
 class OCWatcher(discord.Client):
-    def __init__(self, channel_id: int, api_key: str):
+    def __init__(self, channel_id: int, api_key: str, *, chain: bool = False):
         intents = discord.Intents.default()
+        if chain:
+            # ⚠️ Required for Chain Watch's identity matching (#784) — it is what
+            # populates `guild.members`. Without it ALSO enabled in the developer
+            # portal, the guild looks empty and nobody is ever auto-linked, with
+            # no error to explain why.
+            intents.members = True
         super().__init__(intents=intents)
         self.channel_id = channel_id
         self.api = TornAPI(api_key)
@@ -55,12 +62,28 @@ class OCWatcher(discord.Client):
             store=self.override_store,
             alerts_provider=lambda: self.last_alerts,
         )
+        # ⚠️ Chain Watch rides on THIS client rather than a second process.
+        # Two processes on one token open two gateway connections and Discord
+        # routes each interaction to only one of them — the override button
+        # above would silently stop working roughly half the time, with nothing
+        # logged. Opt-in: None unless a CHAIN_WATCH_TOKEN_* is configured, so
+        # the OC watcher is untouched for anyone not using it.
+        self.chain = chain_runtime.ChainRuntime(self) if chain else None
 
     async def setup_hook(self) -> None:
         # Register the persistent view so button clicks route to its callback
         # even on messages sent in a previous bot lifetime.
         self.add_view(self.view)
         self.poll_loop.start()
+        if self.chain:
+            # ⚠️ Guarded, and it must never take the OC watcher down with it. A
+            # Chain Watch misconfiguration is a new feature failing to start;
+            # the OC watcher has been working for months and is not what changed.
+            try:
+                await self.chain.setup()
+            except Exception:                              # noqa: BLE001
+                log.exception("Chain Watch failed to start — OC watcher continues")
+                self.chain = None
 
     async def on_ready(self) -> None:
         log.info("Logged in as %s (%s)", self.user, self.user.id if self.user else "?")
@@ -68,6 +91,11 @@ class OCWatcher(discord.Client):
             await self._ensure_message()
         except discord.HTTPException as e:
             log.error("Failed to attach to channel %s: %s", self.channel_id, e)
+        if self.chain:
+            try:
+                await self.chain.start()
+            except Exception:                              # noqa: BLE001
+                log.exception("Chain Watch failed to start — OC watcher continues")
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         data = getattr(interaction, "data", None) or {}
@@ -326,7 +354,10 @@ def main() -> None:
             "DISCORD_BOT_TOKEN, DISCORD_CHANNEL_ID, and TORN_API_KEY must all be set in discord/.env"
         )
 
-    bot = OCWatcher(channel_id=int(channel_raw), api_key=api_key)
+    chain = chain_runtime.chain_enabled()
+    if chain:
+        log.info("Chain Watch enabled (a CHAIN_WATCH_TOKEN_* is set)")
+    bot = OCWatcher(channel_id=int(channel_raw), api_key=api_key, chain=chain)
     bot.run(token, log_handler=None)
 
 

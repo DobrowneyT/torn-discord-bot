@@ -11,7 +11,8 @@ import asyncio
 import discord
 import pytest
 
-import chain_bot
+import chain_bot_sender
+import chain_runtime
 import chain_settings
 import chain_tenants
 
@@ -55,7 +56,7 @@ class FakeClient:
 
 
 def sender(channels):
-    return chain_bot.DiscordSender(FakeClient(channels))
+    return chain_bot_sender.DiscordSender(FakeClient(channels))
 
 
 def test_posts_when_there_is_no_message_yet():
@@ -111,13 +112,13 @@ def test_the_interval_is_the_shortest_across_factions():
     chain_tenants.add("tnl", "https://t.example.com", 2, 20)
     chain_settings.set_value("forge", "board_refresh_seconds", "120")
     chain_settings.set_value("tnl", "board_refresh_seconds", "600")
-    bot = chain_bot.ChainBot.__new__(chain_bot.ChainBot)
-    assert chain_bot.ChainBot._interval(bot) == 120
+    rt = chain_runtime.ChainRuntime.__new__(chain_runtime.ChainRuntime)
+    assert chain_runtime.ChainRuntime.interval(rt) == 120
 
 
 def test_the_interval_has_a_default_with_no_factions():
-    bot = chain_bot.ChainBot.__new__(chain_bot.ChainBot)
-    assert chain_bot.ChainBot._interval(bot) == 300
+    rt = chain_runtime.ChainRuntime.__new__(chain_runtime.ChainRuntime)
+    assert chain_runtime.ChainRuntime.interval(rt) == 300
 
 
 # ── command sync scope ───────────────────────────────────────────────────────
@@ -127,15 +128,15 @@ def test_guild_ids_are_read_from_the_environment(monkeypatch):
     # which the commands are simply absent with no error anywhere. That hour is
     # spent believing the bot is broken.
     monkeypatch.setenv("CHAIN_GUILD_IDS", "111, 222")
-    assert chain_bot.guild_ids_from_env() == [111, 222]
+    assert chain_runtime.guild_ids_from_env() == [111, 222]
 
 
 def test_no_guild_ids_means_a_global_sync(monkeypatch):
     monkeypatch.delenv("CHAIN_GUILD_IDS", raising=False)
-    assert chain_bot.guild_ids_from_env() == []
+    assert chain_runtime.guild_ids_from_env() == []
 
 
 def test_junk_in_the_guild_list_is_ignored_not_crashed_on(monkeypatch):
     # A stray comma or a pasted channel name must not stop the bot booting.
     monkeypatch.setenv("CHAIN_GUILD_IDS", "111,,not-an-id,222,")
-    assert chain_bot.guild_ids_from_env() == [111, 222]
+    assert chain_runtime.guild_ids_from_env() == [111, 222]
