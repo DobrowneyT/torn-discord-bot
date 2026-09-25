@@ -56,6 +56,14 @@ What it does each cycle, per faction:
   would be 72 identical messages about the same empty 3am slot, and a channel
   that mutes the bot is worse than no bot.
 
+⚠️ **The board can also be pushed.** Set `CHAIN_NOTIFY_SOCKET` (and the matching
+`CHAIN_NOTIFY_SOCKET` on the dashboard container) and a sign-up redraws the board
+in seconds rather than on the poll interval. Nudges are coalesced —
+`/chain set board_debounce_seconds`, default 5 — because leadership filling a
+rota assigns eight slots in twenty seconds, and that should be one redraw rather
+than eight Discord edits and a flickering board. Entirely optional: without it
+the poll interval behaves exactly as before.
+
 ⚠️ Every ping is recorded so it fires once, and the record **survives a
 restart** — otherwise every redeploy re-pings everybody, and redeploys happen
 most while the thing is being tuned. Nothing is sent once a chain has ended.
