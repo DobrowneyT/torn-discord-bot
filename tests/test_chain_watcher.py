@@ -28,7 +28,10 @@ class FakeSender(cw.Sender):
     def __init__(self):
         self.said = []
         self.boards = []
+        self.edited = []
+        self.deleted = []
         self.next_id = 500
+        self.gone = set()          # ids somebody deleted by hand
 
     async def board(self, channel_id, embeds, message_id):
         self.boards.append({"channel": channel_id, "embeds": embeds,
@@ -39,7 +42,19 @@ class FakeSender(cw.Sender):
         return self.next_id
 
     async def say(self, channel_id, content):
-        self.said.append({"channel": channel_id, "content": content})
+        self.next_id += 1
+        self.said.append({"channel": channel_id, "content": content,
+                          "id": self.next_id})
+        return self.next_id
+
+    async def edit(self, channel_id, message_id, content):
+        if message_id in self.gone:
+            return False
+        self.edited.append({"id": message_id, "content": content})
+        return True
+
+    async def delete(self, channel_id, message_id):
+        self.deleted.append(message_id)
 
 
 def hour(offset, watchers, bonus=False, slots=2):
@@ -426,3 +441,125 @@ def test_a_failed_send_leaves_the_gaps_unannounced_rather_than_swallowed(
     s.fail = False
     run(watcher, forge, TOP + 60_000)
     assert len(s.said) == 1 and "2 hours still need cover" in s.said[0]["content"]
+
+
+# ── remembering what was posted (#785 follow-up) ─────────────────────────────
+
+def test_the_board_survives_a_restart_instead_of_being_re_posted(monkeypatch, forge):
+    # ⚠️ The message id lived only in memory, so every redeploy left a dead
+    # board above a new one — and redeploys happen most while somebody is
+    # tuning the thing and watching the channel.
+    serve(monkeypatch, payload([hour(1, [w("1", "A"), w("2", "B")])]))
+    s1 = FakeSender()
+    run(cw.ChainWatcher(s1), forge, NOW)
+    first_id = s1.boards[0]["message_id"]
+    assert first_id is None                   # nothing known yet: posts
+
+    s2 = FakeSender()                         # a restart: brand new watcher
+    run(cw.ChainWatcher(s2), forge, NOW + 60_000)
+    assert s2.boards[0]["message_id"] == 501, "should have edited the old board"
+
+
+def test_a_gap_ping_is_revised_when_a_slot_fills(monkeypatch, forge):
+    serve(monkeypatch,
+          payload([hour(3, []), hour(4, [])]),
+          payload([hour(3, [w("1", "A"), w("2", "B")]), hour(4, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    assert len(s.said) == 1 and "2 hours still need cover" in s.said[0]["content"]
+
+    run(watcher, forge, TOP + 60_000)
+    # ⚠️ Edited, not re-posted. The message is a request; the request was
+    # partly met, and an edit notifies nobody.
+    assert len(s.said) == 1
+    assert len(s.edited) == 1
+    assert "1 hour still needs cover" in s.edited[0]["content"]
+
+
+def test_a_gap_ping_is_removed_once_every_slot_fills(monkeypatch, forge):
+    serve(monkeypatch,
+          payload([hour(3, [])]),
+          payload([hour(3, [w("1", "A"), w("2", "B")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    posted = s.said[0]["id"]
+    run(watcher, forge, TOP + 60_000)
+    assert s.deleted == [posted]
+
+
+def test_a_ping_is_removed_once_its_hour_is_long_past(monkeypatch, forge):
+    serve(monkeypatch, payload([hour(1, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    posted = s.said[0]["id"]
+    # the hour runs, then the grace hour passes
+    run(watcher, forge, TOP + 3 * HOUR + 60_000)
+    assert posted in s.deleted
+
+
+def test_a_shift_ping_is_removed_but_never_revised(monkeypatch, forge):
+    # ⚠️ "Your shift starts in five minutes" has no live state to correct; it
+    # was true when sent. It is only ever taken down.
+    serve(monkeypatch, payload([hour(1, [w("1", "A"), w("2", "B")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 60_000)
+    assert len(s.said) == 2
+    run(watcher, forge, TOP + 3 * HOUR + 60_000)
+    assert s.edited == []
+    assert len(s.deleted) == 2
+
+
+def test_cleanup_can_be_switched_off(monkeypatch, forge):
+    chain_settings.set_value("forge", "ping_cleanup_hours", "0")
+    serve(monkeypatch, payload([hour(1, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    run(watcher, forge, TOP + 5 * HOUR)
+    assert s.deleted == []
+
+
+def test_the_message_is_not_edited_when_nothing_changed(monkeypatch, forge):
+    # ⚠️ Editing every tick is a Discord call per message per five minutes, for
+    # as long as the event runs, to produce identical text.
+    serve(monkeypatch, payload([hour(3, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    for m in (5, 10, 15):
+        run(watcher, forge, TOP + m * 60_000)
+    assert s.edited == []
+
+
+def test_a_message_deleted_by_hand_is_forgotten(monkeypatch, forge):
+    serve(monkeypatch,
+          payload([hour(3, []), hour(4, [])]),
+          payload([hour(3, [w("1", "A"), w("2", "B")]), hour(4, [])]),
+          payload([hour(3, [w("1", "A"), w("2", "B")]), hour(4, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    s.gone.add(s.said[0]["id"])              # somebody deleted it in Discord
+    run(watcher, forge, TOP + 60_000)
+    run(watcher, forge, TOP + 120_000)
+    # ⚠️ One attempt, then dropped — not retried forever against a message
+    # that will never exist again.
+    assert len(s.edited) == 0
+
+
+def test_the_pings_come_down_when_the_chain_ends(monkeypatch, forge):
+    # ⚠️ A chain that finished on day nine leaves a channel full of "03:00
+    # needs 2 slots" about hours that will never happen.
+    ended = payload([hour(3, [])])
+    ended["event"]["actually_ended_at"] = NOW
+    serve(monkeypatch, payload([hour(3, [])]), ended)
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    posted = s.said[0]["id"]
+    run(watcher, forge, TOP + 60_000)
+    assert s.deleted == [posted]

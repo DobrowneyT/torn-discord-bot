@@ -70,6 +70,17 @@ rota assigns eight slots in twenty seconds, and that should be one redraw rather
 than eight Discord edits and a flickering board. Entirely optional: without it
 the poll interval behaves exactly as before.
 
+⚠️ **The board survives a restart.** Its message id is persisted, so a redeploy
+edits the existing board rather than leaving a dead one above a new one.
+
+⚠️ **Pings are tidied up.** A gap ping is a request with a shelf life: it is
+revised as slots fill, removed once they all do, and removed anyway once its
+hours are `ping_cleanup_hours` past (default 1, `0` disables). Shift pings are
+removed on the same schedule but never revised — "your shift starts in five
+minutes" has no live state to correct. When a chain ends, every tracked ping
+comes down: a channel full of "03:00 needs 2 slots" about hours that will never
+happen is the last thing anybody reads before muting the bot.
+
 ⚠️ Every ping is recorded so it fires once, and the record **survives a
 restart** — otherwise every redeploy re-pings everybody, and redeploys happen
 most while the thing is being tuned. Nothing is sent once a chain has ended.

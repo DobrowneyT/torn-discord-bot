@@ -89,16 +89,56 @@ class DiscordSender(chain_watcher.Sender):
             return None
         return sent.id
 
-    async def say(self, channel_id: int, content: str) -> None:
+    async def say(self, channel_id: int, content: str) -> Optional[int]:
         channel = self.client.get_channel(channel_id)
         if channel is None:
             log.warning("ping channel %s not visible", channel_id)
-            return
+            return None
         try:
-            await channel.send(content)
+            sent = await channel.send(content)
+            return sent.id
         except discord.Forbidden:
             log.error("%s", _explain_forbidden(channel, "send a ping"))
         except discord.HTTPException as e:
             # ⚠️ Swallowed deliberately. A ping that cannot be delivered must
             # not raise into the tick and stop the other factions' boards.
             log.warning("could not send to %s: %s", channel_id, e)
+        return None
+
+    async def edit(self, channel_id: int, message_id: int, content: str) -> bool:
+        """
+        Revise a ping in place. False means it is gone and should be forgotten.
+
+        ⚠️ Editing never notifies, so revising "2 slots open" down to "1 slot"
+        as people sign up costs the channel nothing — which is what makes this
+        preferable to posting a correction.
+        """
+        channel = self.client.get_channel(channel_id)
+        if channel is None:
+            return False
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.edit(content=content)
+            return True
+        except discord.NotFound:
+            # Somebody deleted it by hand. Not an error; stop tracking it.
+            return False
+        except discord.HTTPException as e:
+            # ⚠️ True, not False: a transient failure must not make us forget a
+            # message that is still there, or it would be orphaned forever.
+            log.warning("could not edit %s: %s", message_id, e)
+            return True
+
+    async def delete(self, channel_id: int, message_id: int) -> None:
+        channel = self.client.get_channel(channel_id)
+        if channel is None:
+            return
+        try:
+            message = await channel.fetch_message(message_id)
+            await message.delete()
+        except discord.NotFound:
+            pass                      # already gone; nothing to do
+        except discord.HTTPException as e:
+            # ⚠️ Deleting our OWN message needs no Manage Messages, so a
+            # failure here is transient rather than a permission problem.
+            log.warning("could not delete %s: %s", message_id, e)
