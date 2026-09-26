@@ -101,6 +101,19 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             description="\n\n".join(lines)[:4000],
             color=0x3498DB,
         )
+        # ⚠️ Shout about the dry-run switch. Left off, shift pings name people
+        # instead of mentioning them and nobody is notified at all — and the
+        # BOARD still shows blue mentions, so it looks like pinging works. That
+        # combination has read as a bug twice; it should not be something you
+        # have to remember you turned off.
+        if not values.get("mention_members"):
+            embed.description = (
+                "⚠️ **`mention_members` is OFF** — shift pings name people "
+                "instead of mentioning them, so nobody is notified. The board "
+                "still shows mentions, but a mention in an embed never "
+                "notified anybody anyway.\n"
+                "Turn it on with `/chain set key:mention_members value:on`.\n\n"
+            ) + (embed.description or "")
         # ⚠️ Say where the other half lives, or somebody will file a bug asking
         # why they cannot change the bonus hours from here.
         embed.set_footer(text="Bonus hours, watchers per hour, payout and the gap "

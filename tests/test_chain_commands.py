@@ -66,3 +66,14 @@ def test_resolving_a_faction_asks_when_it_is_ambiguous():
 
     assert chain_commands._resolve("forge") == ("forge", None)
     assert chain_commands._resolve("nope")[0] is None
+
+
+def test_settings_warns_loudly_when_mentions_are_off():
+    # ⚠️ Left off, shift pings notify nobody while the BOARD still shows blue
+    # mentions — so it looks like pinging works. That combination has read as a
+    # bug twice, and it should not be something you have to remember.
+    import chain_settings
+    chain_settings.set_value("forge", "mention_members", "off")
+    assert chain_settings.get("forge", "mention_members") is False
+    chain_settings.set_value("forge", "mention_members", "on")
+    assert chain_settings.get("forge", "mention_members") is True

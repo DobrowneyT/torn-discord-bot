@@ -156,11 +156,13 @@ def test_pings_a_watcher_shortly_before_their_shift_exactly_once(monkeypatch, fo
     watcher = cw.ChainWatcher(s)
     at = TOP + HOUR - 4 * 60_000          # inside the 5-minute lead
     run(watcher, forge, at)
-    assert len(s.said) == 2
+    # ⚠️ ONE message naming both, not one each.
+    assert len(s.said) == 1
+    assert "Goosey" in s.said[0]["content"] and "Muttley" in s.said[0]["content"]
     # ⚠️ The loop re-evaluates the same hour every cycle. Without the ledger
     # this is twelve messages per person per shift.
     run(watcher, forge, at + 60_000)
-    assert len(s.said) == 2
+    assert len(s.said) == 1
 
 
 def test_the_ledger_survives_a_restart(monkeypatch, forge):
@@ -507,10 +509,10 @@ def test_a_shift_ping_is_removed_but_never_revised(monkeypatch, forge):
     s = FakeSender()
     watcher = cw.ChainWatcher(s)
     run(watcher, forge, TOP + HOUR - 60_000)
-    assert len(s.said) == 2
+    assert len(s.said) == 1
     run(watcher, forge, TOP + 3 * HOUR + 60_000)
     assert s.edited == []
-    assert len(s.deleted) == 2
+    assert len(s.deleted) == 1
 
 
 def test_cleanup_can_be_switched_off(monkeypatch, forge):
