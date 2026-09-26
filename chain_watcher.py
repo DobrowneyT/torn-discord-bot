@@ -217,7 +217,12 @@ class ChainWatcher:
             if not due:
                 continue
             content = chain_formatter.build_shift_ping(
-                due, hour_start=hour_start, bonus=hour.get("bonus"),
+                due,
+                # ⚠️ The hour's FULL watcher list, not just the ones being
+                # addressed. Without it a member who signed up after their
+                # partner was already pinged is told they are alone.
+                on_hour=watchers,
+                hour_start=hour_start, bonus=hour.get("bonus"),
                 chain=payload.get("chain"),
                 lead_in_minutes=chain_settings.get(slug, "shift_lead_minutes"))
             if content is None:

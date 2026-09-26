@@ -626,3 +626,84 @@ def test_a_band_with_no_rate_at_all_still_renders():
                       now_ms=NOW)[0].description
     assert "100k around" in d
     assert "hits/h" not in d
+
+
+# ── signing up after your partner was already pinged (live report) ───────────
+#
+# ⚠️ What MonChoon saw: JoyBoy signed up alone for 03:00 and was pinged. He
+# then signed up inside the five-minute window, and HIS ping named nobody else
+# and told him he was the only watcher — with JoyBoy sitting right there on the
+# board. One cause, two wrong statements: the message derived both "who else is
+# here" and "are you alone" from `due`, which is who still needs TELLING, not
+# who is on the hour.
+
+def shift_msgs(sender):
+    """Only the shift pings. ⚠️ A half-covered hour also produces a GAP ping in
+    the same tick, and counting both makes these assertions unreadable."""
+    return [m for m in sender.said if "still need" not in m["content"]]
+
+
+def test_joining_late_does_not_tell_you_that_you_are_alone(monkeypatch, forge):
+    serve(monkeypatch,
+          payload([hour(1, [w("1", "JoyBoy")])]),
+          payload([hour(1, [w("1", "JoyBoy"), w("2", "MonChoon")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    at = TOP + HOUR - 4 * 60_000
+
+    run(watcher, forge, at)                       # JoyBoy alone: correct then
+    assert "only watcher" in shift_msgs(s)[0]["content"]
+
+    run(watcher, forge, at + 60_000)              # MonChoon signs up
+    assert len(shift_msgs(s)) == 2, "the new signup should still be pinged"
+    second = shift_msgs(s)[1]["content"]
+    assert "only watcher" not in second, "he is NOT alone — JoyBoy holds the other slot"
+    assert "JoyBoy" in second, "and the partner has to be named"
+
+
+def test_the_already_pinged_partner_is_not_pinged_again(monkeypatch, forge):
+    # ⚠️ Naming somebody is not telling them again. JoyBoy appears in the text
+    # as a partner, but must not be mentioned into a second notification.
+    serve(monkeypatch,
+          payload([hour(1, [{**w("1", "JoyBoy"), "discord_id": 11}])]),
+          payload([hour(1, [{**w("1", "JoyBoy"), "discord_id": 11}, w("2", "MonChoon")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    at = TOP + HOUR - 4 * 60_000
+    run(watcher, forge, at)
+    run(watcher, forge, at + 60_000)
+    run(watcher, forge, at + 120_000)
+    assert len(shift_msgs(s)) == 2, "nobody is pinged twice for the same hour"
+    # ⚠️ And naming is not notifying: a mention in message content BUZZES, so
+    # the already-told partner appears as a plain name, not as <@id>.
+    second = shift_msgs(s)[1]["content"]
+    assert "JoyBoy" in second
+    assert "<@11>" not in second, "naming the partner must not re-ping them"
+
+
+def test_two_signing_up_together_still_reads_naturally(monkeypatch, forge):
+    # The path that already worked must not regress into "A — ... With B."
+    serve(monkeypatch, payload([hour(1, [w("1", "JoyBoy"), w("2", "MonChoon")])]))
+    s = FakeSender()
+    run(cw.ChainWatcher(s), forge, TOP + HOUR - 60_000)
+    body = shift_msgs(s)[0]["content"]
+    assert "JoyBoy" in body and "MonChoon" in body
+    assert "With" not in body and "only watcher" not in body
+
+
+def test_a_flying_partner_is_named_but_flagged(monkeypatch, forge):
+    # ⚠️ They hold the slot, so "you are alone" would be wrong — but a bare
+    # "With CalliBee" is misleading when CalliBee is over the Atlantic.
+    travel = {"state": "Traveling", "description": "Traveling from Torn to South Africa",
+              "destination": "South Africa", "plane_image_type": "airliner",
+              "departed_at": TOP - 30 * 60_000}
+    serve(monkeypatch, payload([hour(1, [w("1", "CalliBee", travel), w("2", "MonChoon")])]))
+    s = FakeSender()
+    run(cw.ChainWatcher(s), forge, TOP + HOUR - 60_000)
+    # CalliBee got the early flight warning, so only MonChoon is addressed now.
+    ordinary = [m for m in s.said if "only watcher" in m["content"] or "With" in m["content"]]
+    assert ordinary, "MonChoon should still be pinged"
+    assert "CalliBee" in ordinary[-1]["content"]
+    assert "✈️" in ordinary[-1]["content"]
+    assert "<@11>" not in ordinary[-1]["content"], "already warned — do not re-ping"
+    assert "only watcher" not in ordinary[-1]["content"]
