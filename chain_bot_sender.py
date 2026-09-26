@@ -10,6 +10,7 @@ Everything here is I/O; nothing here decides anything.
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Optional
 
 import discord
@@ -142,3 +143,47 @@ class DiscordSender(chain_watcher.Sender):
             # ⚠️ Deleting our OWN message needs no Manage Messages, so a
             # failure here is transient rather than a permission problem.
             log.warning("could not delete %s: %s", message_id, e)
+
+
+    async def purge_own(self, channel_id: int, *, before_ms: int,
+                        keep_ids: set, limit: int = 500) -> int:
+        """
+        Delete the bot's OWN messages in a channel, older than `before_ms`.
+
+        ⚠️ **Only messages this bot authored.** Deleting anybody else's would be
+        a different and much worse tool, and the permission to do it (Manage
+        Messages) is one this bot deliberately does not hold — so a bug here
+        fails with a 403 rather than eating a channel.
+
+        ⚠️ **`keep_ids` is not optional.** The standing board lives in the same
+        channel as the pings when the operator has not split them, and it is
+        old by definition — it is edited in place, never re-posted. Without
+        this, the first tidy-up would delete the board.
+
+        ⚠️ **Bounded scan.** `limit` caps how far back it looks, so a stray
+        command cannot walk the entire history of a busy channel.
+        """
+        channel = self.client.get_channel(channel_id)
+        if channel is None:
+            return 0
+        me = self.client.user
+        cutoff = datetime.fromtimestamp(before_ms / 1000, tz=timezone.utc)
+        removed = 0
+        try:
+            async for message in channel.history(limit=limit, before=cutoff):
+                if me is None or message.author.id != me.id:
+                    continue
+                if message.id in keep_ids:
+                    continue
+                try:
+                    await message.delete()
+                    removed += 1
+                except discord.NotFound:
+                    pass
+                except discord.HTTPException as e:
+                    log.warning("could not delete %s: %s", message.id, e)
+        except discord.Forbidden:
+            log.error("%s", _explain_forbidden(channel, "read history to tidy up"))
+        except discord.HTTPException as e:
+            log.warning("tidy scan failed in %s: %s", channel_id, e)
+        return removed

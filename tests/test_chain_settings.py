@@ -122,3 +122,43 @@ def test_migration_is_idempotent_and_leaves_scoped_state_alone():
     # layer, which would make every value vanish behind a slug called "forge".
     for _ in range(3):
         assert cs.get("forge", "board_hours_shown") == 12
+
+
+# ── ping_cleanup_hours → ping_cleanup_minutes ───────────────────────────────
+
+def _write_state(block):
+    with open(state.STATE_PATH, "w") as f:
+        json.dump({"chain_settings": block}, f)
+
+
+def test_an_existing_hours_value_is_carried_over_as_minutes():
+    # ⚠️ Dropping it would silently reset a deliberate choice to the default,
+    # and "messages live an hour longer than I set" is not a symptom anybody
+    # connects to an upgrade.
+    _write_state({"forge": {"ping_cleanup_hours": 3}})
+    assert cs.get("forge", "ping_cleanup_minutes") == 180
+
+
+def test_the_old_zero_means_never_and_maps_to_the_maximum():
+    # ⚠️ The old 0 meant "never delete". The new 0 means the OPPOSITE — remove
+    # it the moment the hour ends — so a straight copy would have turned
+    # "never" into "immediately" for anybody who had set it.
+    _write_state({"forge": {"ping_cleanup_hours": 0}})
+    assert cs.get("forge", "ping_cleanup_minutes") == 10080
+
+
+def test_a_new_value_already_present_is_not_overwritten():
+    _write_state({"forge": {"ping_cleanup_hours": 3, "ping_cleanup_minutes": 15}})
+    assert cs.get("forge", "ping_cleanup_minutes") == 15
+
+
+def test_the_retired_key_stops_being_offered():
+    assert "ping_cleanup_hours" not in cs.SETTINGS
+    assert "ping_cleanup_minutes" in cs.SETTINGS
+
+
+def test_the_pre_multi_tenant_block_migrates_the_key_too():
+    # Both migrations at once: flat → per-tenant, and hours → minutes.
+    _write_state({"ping_cleanup_hours": 2, "board_channel_id": 999})
+    assert cs.get(cs.LEGACY_SLUG, "ping_cleanup_minutes") == 120
+    assert cs.get(cs.LEGACY_SLUG, "board_channel_id") == 999

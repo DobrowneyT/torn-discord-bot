@@ -104,11 +104,21 @@ edits the existing board rather than leaving a dead one above a new one.
 
 ⚠️ **Pings are tidied up.** A gap ping is a request with a shelf life: it is
 revised as slots fill, removed once they all do, and removed anyway once its
-hours are `ping_cleanup_hours` past (default 1, `0` disables). Shift pings are
-removed on the same schedule but never revised — "your shift starts in five
-minutes" has no live state to correct. When a chain ends, every tracked ping
-comes down: a channel full of "03:00 needs 2 slots" about hours that will never
-happen is the last thing anybody reads before muting the bot.
+hours are `ping_cleanup_minutes` past (default 60). Shift pings go on the same
+schedule but are never revised — "your shift starts in five minutes" has no live
+state to correct. `0` removes a ping the moment its hour ends; the maximum is a
+week, which outlives any chain.
+
+⚠️ **Flight warnings are kept**, by both the clean-up and the sweep when a chain
+ends. They record *why* a slot went uncovered, and a lead asking "why did nobody
+hit at 04:00" is asking during payout review — after the chain has finished.
+
+⚠️ **`/chain tidy hours:24` is for messages the bot does not track.** Pings sent
+before clean-up existed were never recorded, so nothing will ever remove them
+automatically. It deletes only this bot's own messages, never the board, never
+anything still tracked, and scans a bounded slice of history. Operator-triggered
+on purpose: a bot that bulk-deletes channel history on its own is one nobody can
+trust.
 
 ⚠️ Every ping is recorded so it fires once, and the record **survives a
 restart** — otherwise every redeploy re-pings everybody, and redeploys happen

@@ -87,7 +87,8 @@ class ChainRuntime:
 
     async def setup(self) -> None:
         chain_commands.register(self.tree, lead_role_id=self.lead_role_id,
-                                on_change=self.refresh_now)
+                                on_change=self.refresh_now,
+                                sender=self.watcher.sender)
         chain_link_sync.attach(self.client)
         if self.guild_ids:
             # ⚠️ copy_global_to then sync per guild. Registering against only one
