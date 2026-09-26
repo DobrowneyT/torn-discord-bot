@@ -16,6 +16,7 @@ import chain_eta
 import chain_formatter
 import chain_identity
 import chain_ledger
+import chain_posts
 import chain_settings
 import chain_tenants
 
@@ -39,7 +40,15 @@ class Sender:
     async def board(self, channel_id: int, embeds, message_id: Optional[int]) -> Optional[int]:
         raise NotImplementedError
 
-    async def say(self, channel_id: int, content: str) -> None:
+    async def say(self, channel_id: int, content: str) -> Optional[int]:
+        """Post a message. Returns its id so it can be revised or removed."""
+        raise NotImplementedError
+
+    async def edit(self, channel_id: int, message_id: int, content: str) -> bool:
+        """Returns False when the message is gone, so the caller can forget it."""
+        raise NotImplementedError
+
+    async def delete(self, channel_id: int, message_id: int) -> None:
         raise NotImplementedError
 
 
@@ -72,6 +81,10 @@ def _event_is_over(payload: Dict) -> bool:
 class ChainWatcher:
     def __init__(self, sender: Sender):
         self.sender = sender
+        # ⚠️ Only a cache in front of chain_posts, never the record. Holding it
+        # here alone is why every restart posted a fresh board and left the old
+        # one dead above it — and redeploys happen most while somebody is
+        # tuning the thing and watching the channel.
         self._board_messages: Dict[str, Optional[int]] = {}
         #: ⚠️ The last payload that actually arrived, per faction. A failed poll
         #: must leave the previous board standing rather than blanking it: an
@@ -104,6 +117,12 @@ class ChainWatcher:
             # Clear the ledger so the next event starts clean rather than
             # inheriting suppressions keyed on hours that will never repeat.
             chain_ledger.forget(slug)
+            # ⚠️ And take the pings down. A chain that finished on day nine
+            # leaves a channel full of "03:00 needs 2 slots" about hours that
+            # will never happen, which is the last thing anybody reads before
+            # muting the bot.
+            for post in chain_posts.forget_all(slug):
+                await self.sender.delete(post["channel_id"], post["message_id"])
             return
 
         await self._draw_board(tenant, payload, now_ms, stale=stale)
@@ -114,6 +133,9 @@ class ChainWatcher:
         if not stale:
             await self._shift_pings(tenant, payload, now_ms)
             await self._gap_pings(tenant, payload, now_ms)
+            # ⚠️ After sending, so a gap announced and filled inside one tick
+            # is revised rather than left claiming slots that are taken.
+            await self._tidy_posts(tenant, payload, now_ms)
 
     async def _draw_board(self, tenant, payload: Dict, now_ms: int, *, stale: bool) -> None:
         slug = tenant.slug
@@ -126,8 +148,12 @@ class ChainWatcher:
             hours_shown=chain_settings.get(slug, "board_hours_shown"),
             compact=chain_settings.get(slug, "board_compact"),
             stale=stale)
-        message_id = await self.sender.board(
-            tenant.board_channel_id, embeds, self._board_messages.get(slug))
+        known = self._board_messages.get(slug)
+        if known is None:
+            known = chain_posts.board_message(slug)
+        message_id = await self.sender.board(tenant.board_channel_id, embeds, known)
+        if message_id and message_id != known:
+            chain_posts.set_board_message(slug, message_id)
         if message_id:
             self._board_messages[slug] = message_id
 
@@ -159,7 +185,7 @@ class ChainWatcher:
                 if until <= flight_ms and chain_eta.may_miss(watcher.get("travel"), hour_start):
                     await self._send_once(
                         tenant, chain_ledger.shift_key(watcher["member_id"], hour_start, "flight"),
-                        chain_formatter.build_shift_ping(shift))
+                        chain_formatter.build_shift_ping(shift), hour_ms=hour_start)
                     continue
 
                 if until <= lead_ms:
@@ -167,7 +193,8 @@ class ChainWatcher:
                         tenant, chain_ledger.shift_key(watcher["member_id"], hour_start),
                         chain_formatter.build_shift_ping(
                             {**shift, "travel": None},
-                            lead_in_minutes=chain_settings.get(slug, "shift_lead_minutes")))
+                            lead_in_minutes=chain_settings.get(slug, "shift_lead_minutes")),
+                        hour_ms=hour_start)
 
     async def _gap_pings(self, tenant, payload: Dict, now_ms: int) -> None:
         slug = tenant.slug
@@ -212,15 +239,89 @@ class ChainWatcher:
         content = chain_formatter.build_gap_ping(gaps, last_call_hours=LAST_CALL_HOURS)
         if content is None:
             return
-        await self.sender.say(tenant.pings_to, content)
+        message_id = await self.sender.say(tenant.pings_to, content)
+        if message_id:
+            chain_posts.record(slug, kind="gap", message_id=message_id,
+                               channel_id=tenant.pings_to,
+                               hours=[g["hour"]["hour_start"] for g in gaps],
+                               content=content)
         # ⚠️ Marked only AFTER the send. Marking first would silently swallow
         # every gap in a tick whose message failed to deliver, and those hours
         # would then never be announced at all.
         for key in keys:
             chain_ledger.mark_sent(slug, key)
 
-    async def _send_once(self, tenant, key: str, content: Optional[str]) -> None:
+    async def _send_once(self, tenant, key: str, content: Optional[str],
+                         hour_ms: Optional[int] = None) -> None:
         if content is None or chain_ledger.already_sent(tenant.slug, key):
             return
-        await self.sender.say(tenant.pings_to, content)
+        message_id = await self.sender.say(tenant.pings_to, content)
         chain_ledger.mark_sent(tenant.slug, key)
+        if message_id and hour_ms is not None:
+            chain_posts.record(tenant.slug, kind="shift", message_id=message_id,
+                               channel_id=tenant.pings_to, hours=[hour_ms])
+
+    async def _tidy_posts(self, tenant, payload: Dict, now_ms: int) -> None:
+        """
+        Revise or remove pings that have stopped being true.
+
+        ⚠️ Two different ways of stopping being true, and they want different
+        answers. A gap that somebody FILLED should lose that line — the message
+        is a request, and the request was met. A gap whose hour has simply
+        PASSED is history, and history in a ping channel is clutter.
+
+        ⚠️ A shift ping is never revised, only removed. "Your shift starts in
+        five minutes" has no live state to correct; it was true when sent.
+        """
+        slug = tenant.slug
+        grace_hours = chain_settings.get(slug, "ping_cleanup_hours")
+        if grace_hours <= 0:
+            return                       # cleanup switched off
+        grace_ms = grace_hours * HOUR_MS
+        by_hour = {h["hour_start"]: h for h in payload.get("hours", [])}
+
+        for post in chain_posts.posts_for(slug):
+            expired = all(h + HOUR_MS + grace_ms <= now_ms for h in post["hours"])
+            if expired:
+                await self.sender.delete(post["channel_id"], post["message_id"])
+                chain_posts.forget(slug, post["message_id"])
+                continue
+            if post.get("kind") != "gap":
+                continue
+
+            live = []
+            for hour_ms in post["hours"]:
+                hour = by_hour.get(hour_ms)
+                # ⚠️ An hour that has fallen off the board is not "covered" —
+                # we simply cannot see it any more. Left alone rather than
+                # silently reported as solved.
+                if hour is None or hour_ms + HOUR_MS + grace_ms <= now_ms:
+                    continue
+                open_slots = hour.get("open_slots")
+                if open_slots is None:
+                    open_slots = max(0, int(hour.get("slots_per_hour", 2))
+                                     - len(hour.get("watchers", [])))
+                if open_slots <= 0:
+                    continue             # somebody signed up: request met
+                until = hour_ms - now_ms
+                live.append({
+                    "hour": hour, "open_slots": open_slots,
+                    "stage": "last-call" if until <= LAST_CALL_HOURS * HOUR_MS else "first",
+                })
+
+            if not live:
+                await self.sender.delete(post["channel_id"], post["message_id"])
+                chain_posts.forget(slug, post["message_id"])
+                continue
+            content = chain_formatter.build_gap_ping(
+                live, last_call_hours=LAST_CALL_HOURS)
+            # ⚠️ Only when it actually changed. Editing every tick is a Discord
+            # call per message per five minutes for as long as the event runs,
+            # to produce identical text.
+            if content and content != post.get("content"):
+                alive = await self.sender.edit(
+                    post["channel_id"], post["message_id"], content)
+                if alive:
+                    chain_posts.update(slug, post["message_id"], content)
+                else:
+                    chain_posts.forget(slug, post["message_id"])

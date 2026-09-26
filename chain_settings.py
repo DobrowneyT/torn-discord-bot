@@ -108,6 +108,14 @@ SETTINGS: Dict[str, Setting] = {
                 "Ping people by mention in shift alerts. Off names them instead, "
                 "without notifying. Does not affect the board, where a mention "
                 "never notifies anyway."),
+        # ⚠️ A ping is a request with a shelf life. Left up, the channel fills
+        # with claims that are no longer true — "03:00 needs 2 slots" about an
+        # hour that was covered, or that happened yesterday — and a reader
+        # cannot tell which of them still hold.
+        Setting("ping_cleanup_hours", 1, "int",
+                "Hours after an hour has finished before its ping is removed. "
+                "A gap ping is also revised as slots fill, and removed once "
+                "they all do. 0 leaves every message up forever.", lo=0, hi=168),
         Setting("quiet_when_covered", False, "bool",
                 "Skip the gap line entirely when every slot ahead is filled."),
     ]
