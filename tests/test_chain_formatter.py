@@ -97,20 +97,43 @@ def test_the_mock_still_renders():
 
 
 def test_shift_ping_mentions_when_linked_and_names_when_not():
-    base = {"name": "Goosey", "member_id": "873341",
-            "hour_start": TOP + HOUR, "chain": {"current": 61_204}}
-    assert "<@42>" in f.build_shift_ping({**base, "discord_id": 42})
+    base = {"name": "Goosey", "member_id": "873341"}
+    linked = f.build_shift_ping([{**base, "discord_id": 42}], hour_start=TOP + HOUR)
+    assert "<@42>" in linked
     # ⚠️ `Name [ID]`, not a bare name: leadership needs to see WHO to chase, and
     # the id is what tells two members with similar display names apart (#784).
-    assert "Goosey [873341]" in f.build_shift_ping(base)
+    assert "Goosey [873341]" in f.build_shift_ping([base], hour_start=TOP + HOUR)
+
+
+def test_one_message_names_everybody_on_the_hour():
+    # ⚠️ One post per watcher was two near-identical messages seconds apart,
+    # each telling one of the pair about the other. Nobody reads the second.
+    both = f.build_shift_ping(
+        [{"name": "A", "member_id": "1", "discord_id": 11},
+         {"name": "B", "member_id": "2", "discord_id": 22}],
+        hour_start=TOP + HOUR)
+    assert "<@11>" in both and "<@22>" in both
+    assert both.count("chain watch starts") == 1
+
+
+def test_the_shift_ping_names_TCT_like_everything_else():
+    body = f.build_shift_ping([{"name": "A", "member_id": "1"}], hour_start=TOP + HOUR)
+    assert "TCT" in body
+
+
+def test_no_watchers_produces_no_message():
+    assert f.build_shift_ping([], hour_start=TOP + HOUR) is None
 
 
 def test_shift_ping_says_when_you_are_alone():
-    solo = f.build_shift_ping({"name": "A", "hour_start": TOP + HOUR})
+    solo = f.build_shift_ping([{"name": "A", "member_id": "1"}], hour_start=TOP + HOUR)
     assert "only watcher" in solo
-    paired = f.build_shift_ping({"name": "A", "hour_start": TOP + HOUR,
-                                 "partner": {"name": "B"}})
-    assert "only watcher" not in paired and "**B**" in paired
+    # ⚠️ Trailing the sentence, not wedged between the name and the time.
+    assert solo.index("chain watch starts") < solo.index("only watcher")
+    paired = f.build_shift_ping([{"name": "A", "member_id": "1"},
+                                 {"name": "B", "member_id": "2"}],
+                                hour_start=TOP + HOUR)
+    assert "only watcher" not in paired and "B [2]" in paired
 
 
 def test_every_board_row_names_TCT():
@@ -209,6 +232,7 @@ def test_the_default_board_still_mentions():
 
 def test_compact_does_not_touch_the_shift_ping():
     # ⚠️ The board's mention notifies nobody (embeds do not ping); the shift
-    # ping is where reaching somebody happens, and mention_members governs it.
+    # ping is a plain message, where a mention DOES notify — which is the whole
+    # point of it and why compact never reaches this far.
     assert "<@42>" in f.build_shift_ping(
-        {"name": "A", "member_id": "1", "discord_id": 42, "hour_start": TOP + HOUR})
+        [{"name": "A", "member_id": "1", "discord_id": 42}], hour_start=TOP + HOUR)

@@ -287,28 +287,51 @@ def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[st
             + "\n".join(lines))
 
 
-def build_shift_ping(shift: Dict, *, lead_in_minutes: int = 5) -> str:
+def build_travel_warning(shift: Dict) -> str:
     """
-    A one-shot mention, because a shift starting IS an event.
+    One person, one problem: they are away and may not make their shift.
 
-    ⚠️ For somebody in the air this has to go EARLIER than the usual lead-in —
-    five minutes' notice is useless to a member over the Atlantic, and the whole
-    point is to give them or a leader time to do something about it.
+    ⚠️ Kept separate from the ordinary reminder even though both are about the
+    same hour. The instruction differs — this one asks them to DROP the slot —
+    and it fires much earlier, so folding the two together would either make
+    the warning late or the reminder absurdly early.
     """
-    when = _ts(shift["hour_start"])
-    mention = _who(shift)
-    bonus = " ⭐ *double tickets this hour*" if shift.get("bonus") else ""
+    who = _who(shift)
+    travel = shift.get("travel") or {}
+    return (f"{who} your chain watch starts at {_ts(shift['hour_start'])} and you are "
+            f"**away** — {_travel_phrase(travel)}. "
+            f"If that is too late, drop the slot on the dashboard so somebody can cover it.")
 
-    partner = shift.get("partner")
-    with_who = f" with **{partner['name']}**" if partner else " — **you are the only watcher this hour**"
 
-    travel = shift.get("travel")
-    if travel:
-        return (f"{mention} your chain watch starts at {when} and you are "
-                f"**away** — {_travel_phrase(travel)}. "
-                f"If that is too late, drop the slot on the dashboard so somebody can cover it.")
+def build_shift_ping(watchers: List[Dict], *, hour_start: int, bonus: bool = False,
+                     chain: Optional[Dict] = None, lead_in_minutes: int = 5) -> Optional[str]:
+    """
+    ONE message for everybody on the same hour.
 
-    chain = shift.get("chain") or {}
-    chain_bit = (f" Chain is at {chain['current']:,}." if chain.get("current") else "")
-    return (f"{mention} your chain watch starts at {when} "
-            f"(in {lead_in_minutes} min){with_who}.{bonus}{chain_bit}")
+    ⚠️ One message per watcher meant two near-identical posts seconds apart,
+    each telling one of the pair about the other. Nobody reads the second, and
+    a channel that trains people to skip the bot's messages costs more than the
+    shift it is announcing.
+
+    ⚠️ Mentions go in the CONTENT, never an embed. A mention inside an embed
+    renders as a blue link and notifies nobody — which is exactly the trap the
+    board falls into deliberately, and which this must not.
+    """
+    if not watchers:
+        return None
+
+    names = [_who(w) for w in watchers]
+    who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+
+    when = f"`{_tct(hour_start)}` TCT · {_ts(hour_start)}"
+    star = " ⭐ *double tickets this hour*" if bonus else ""
+    chain = chain or {}
+    at = f" Chain is at {chain['current']:,}." if chain.get("current") else ""
+    # ⚠️ Trails the sentence rather than interrupting it. Being the only watcher
+    # is the thing a leader needs to notice, and it reads as an afterthought
+    # wedged between the name and the time.
+    alone = " **You are the only watcher this hour.**" if len(names) == 1 else ""
+    return (f"{who} — your chain watch starts at {when} "
+            f"(in {lead_in_minutes} min).{star}{at}{alone}")
+
+

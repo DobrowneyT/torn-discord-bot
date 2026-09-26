@@ -169,32 +169,56 @@ class ChainWatcher:
                 continue
             until = hour_start - now_ms
             watchers = _enrich(hour.get("watchers", []))
-            for i, watcher in enumerate(watchers):
-                partner = next((o for j, o in enumerate(watchers) if j != i), None)
-                shift = {
-                    **watcher, "hour_start": hour_start, "bonus": hour.get("bonus"),
-                    "partner": partner, "chain": payload.get("chain"),
-                }
-                if not mention:
-                    shift.pop("discord_id", None)
+            if not mention:
+                # The dry run: real messages, nobody's phone buzzing.
+                watchers = [{k: v for k, v in w.items() if k != "discord_id"}
+                            for w in watchers]
 
-                # ⚠️ The travel warning fires EARLY and SEPARATELY. Five
-                # minutes' notice is useless to somebody over the Atlantic —
-                # the entire point is that it arrives while they or a leader
-                # can still do something about it.
-                if until <= flight_ms and chain_eta.may_miss(watcher.get("travel"), hour_start):
-                    await self._send_once(
-                        tenant, chain_ledger.shift_key(watcher["member_id"], hour_start, "flight"),
-                        chain_formatter.build_shift_ping(shift), hour_ms=hour_start)
+            # ⚠️ The travel warning fires EARLY and per person. Five minutes'
+            # notice is useless to somebody over the Atlantic, and the
+            # instruction — drop the slot — is theirs alone.
+            flying = set()
+            for watcher in watchers:
+                if until > flight_ms:
                     continue
+                if not chain_eta.may_miss(watcher.get("travel"), hour_start):
+                    continue
+                flying.add(watcher["member_id"])
+                await self._send_once(
+                    tenant,
+                    chain_ledger.shift_key(watcher["member_id"], hour_start, "flight"),
+                    chain_formatter.build_travel_warning(
+                        {**watcher, "hour_start": hour_start}),
+                    hour_ms=hour_start)
 
-                if until <= lead_ms:
-                    await self._send_once(
-                        tenant, chain_ledger.shift_key(watcher["member_id"], hour_start),
-                        chain_formatter.build_shift_ping(
-                            {**shift, "travel": None},
-                            lead_in_minutes=chain_settings.get(slug, "shift_lead_minutes")),
-                        hour_ms=hour_start)
+            if until > lead_ms:
+                continue
+
+            # ⚠️ ONE message for everybody still due on this hour. Two
+            # near-identical posts seconds apart, each naming the other person,
+            # is how a channel learns to skip the bot.
+            due = [w for w in watchers
+                   if w["member_id"] not in flying
+                   and not chain_ledger.already_sent(
+                       slug, chain_ledger.shift_key(w["member_id"], hour_start))]
+            if not due:
+                continue
+            content = chain_formatter.build_shift_ping(
+                due, hour_start=hour_start, bonus=hour.get("bonus"),
+                chain=payload.get("chain"),
+                lead_in_minutes=chain_settings.get(slug, "shift_lead_minutes"))
+            if content is None:
+                continue
+            message_id = await self.sender.say(tenant.pings_to, content)
+            # ⚠️ Marked only after the send, and for everybody named — a failed
+            # message must leave them all to be pinged next tick rather than
+            # silently marking some of them done.
+            for watcher in due:
+                chain_ledger.mark_sent(
+                    slug, chain_ledger.shift_key(watcher["member_id"], hour_start))
+            if message_id:
+                chain_posts.record(slug, kind="shift", message_id=message_id,
+                                   channel_id=tenant.pings_to, hours=[hour_start])
 
     async def _gap_pings(self, tenant, payload: Dict, now_ms: int) -> None:
         slug = tenant.slug

@@ -46,7 +46,10 @@ What it does each cycle, per faction:
   leaves the last good board up with a staleness note rather than blanking it —
   an empty board reads as "nobody is signed up", which is the one message that
   must never be wrong.
-- **pings a watcher** `shift_lead_minutes` before their hour.
+- **pings everybody on an hour in one message**, `shift_lead_minutes` before it.
+  ⚠️ Mentions go in the message CONTENT, where they actually notify — unlike the
+  board, where a mention is a blue link that notifies nobody. Needs
+  `mention_members` on, which `/chain settings` now warns about when it is off.
 - **pings a flyer early**, at `flight_lead_minutes`, when the landing band says
   they may not make it. Five minutes' notice is useless to somebody over the
   Atlantic; the point is that it arrives while they or a leader can still act.
