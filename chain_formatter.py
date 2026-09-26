@@ -310,35 +310,69 @@ def build_travel_warning(shift: Dict) -> str:
             f"If that is too late, drop the slot on the dashboard so somebody can cover it.")
 
 
-def build_shift_ping(watchers: List[Dict], *, hour_start: int, bonus: bool = False,
+def build_shift_ping(due: List[Dict], *, on_hour: Optional[List[Dict]] = None,
+                     hour_start: int, bonus: bool = False,
                      chain: Optional[Dict] = None, lead_in_minutes: int = 5) -> Optional[str]:
     """
-    ONE message for everybody on the same hour.
+    ONE message for everybody on the same hour who has not been told yet.
 
-    ⚠️ One message per watcher meant two near-identical posts seconds apart,
-    each telling one of the pair about the other. Nobody reads the second, and
-    a channel that trains people to skip the bot's messages costs more than the
-    shift it is announcing.
+    ⚠️ **`due` is who to ADDRESS; `on_hour` is who is actually on the hour, and
+    they are not the same list.** Somebody pinged on an earlier tick is absent
+    from `due` but still holds their slot. Deriving the message from `due`
+    alone produced this, live: JoyBoy signed up alone and was pinged; MonChoon
+    signed up inside the five-minute window; MonChoon's ping named nobody else
+    and told him he was the only watcher — with JoyBoy sitting right there on
+    the board.
+
+    Two separate things went wrong from one cause, so both are fixed here:
+      • "only watcher" now counts `on_hour`, not `due`
+      • a partner who was already pinged is still NAMED, so the message reads
+        the same whether the two signed up together or minutes apart
 
     ⚠️ Mentions go in the CONTENT, never an embed. A mention inside an embed
-    renders as a blue link and notifies nobody — which is exactly the trap the
-    board falls into deliberately, and which this must not.
+    renders as a blue link and notifies nobody.
     """
-    if not watchers:
+    if not due:
         return None
+    everyone = on_hour if on_hour is not None else due
 
-    names = [_who(w) for w in watchers]
+    names = [_who(w) for w in due]
     who = names[0] if len(names) == 1 else ", ".join(names[:-1]) + f" and {names[-1]}"
+
+    # ⚠️ Anybody on the hour we are NOT addressing — pinged earlier, or warned
+    # about a flight. They hold the slot, so the message has to account for
+    # them or it is telling a watcher they are alone when they are not.
+    due_ids = {str(w.get("member_id")) for w in due}
+    others = [w for w in everyone if str(w.get("member_id")) not in due_ids]
 
     when = f"`{_tct(hour_start)}` TCT · {_ts(hour_start)}"
     star = " ⭐ *double tickets this hour*" if bonus else ""
     chain = chain or {}
     at = f" Chain is at {chain['current']:,}." if chain.get("current") else ""
-    # ⚠️ Trails the sentence rather than interrupting it. Being the only watcher
-    # is the thing a leader needs to notice, and it reads as an afterthought
-    # wedged between the name and the time.
-    alone = " **You are the only watcher this hour.**" if len(names) == 1 else ""
+
+    if len(everyone) <= 1:
+        # ⚠️ Trails the sentence rather than interrupting it. Being the only
+        # watcher is the thing a leader needs to notice, and it reads as an
+        # afterthought wedged between the name and the time.
+        tail = " **You are the only watcher this hour.**"
+    elif others:
+        # ⚠️ A traveller is named but flagged: they hold the slot, so "you are
+        # alone" would be wrong — and "with CalliBee" alone would be misleading
+        # when CalliBee is over the Atlantic.
+        # ⚠️ Plain names, NOT mentions. A mention in message content notifies,
+        # and these people were already told on an earlier tick — naming them
+        # is informational, pinging them again is a second buzz for a shift
+        # they already know about.
+        shown = ", ".join(
+            f"**{_who(w, compact=True)}** ✈️" if w.get("travel")
+            else f"**{_who(w, compact=True)}**"
+            for w in others)
+        tail = f" With {shown}."
+    else:
+        tail = ""
+
     return (f"{who} — your chain watch starts at {when} "
-            f"(in {lead_in_minutes} min).{star}{at}{alone}")
+            f"(in {lead_in_minutes} min).{star}{at}{tail}")
+
 
 
