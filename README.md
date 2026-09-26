@@ -59,11 +59,12 @@ What it does each cycle, per faction:
   is named ⚠️ **twice at most**: once on entering the horizon, once as a last
   call two hours out, then silence.
 
-  ⚠️ The second time on each line is the reader's own, and **cannot carry a
-  zone name**: Discord renders `<t:…:t>` client-side and the bot never learns
-  the reader's timezone. Printing one would mean printing the server's to
-  everybody — a confident, wrong label for anyone elsewhere. The header says
-  whose clock it is instead.
+  ⚠️ Each line names TCT, and the second time is the reader's own. That second
+  one is deliberately unexplained — with "TCT" on the line the pairing reads for
+  itself — and it **cannot carry a zone name** anyway: Discord renders
+  `<t:…:t>` client-side, so the bot never learns the reader's timezone.
+  Printing one would mean printing the server's to everybody, a confident wrong
+  label for anyone elsewhere.
 
 ⚠️ **An embed cannot be made wider.** Its width is fixed by the Discord client
 and there is no API for it. A mention renders as the member's *server nickname*,

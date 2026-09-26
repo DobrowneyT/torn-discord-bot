@@ -396,19 +396,20 @@ def test_one_gap_still_reads_as_english():
     assert "1 hour still needs cover" in one
 
 
-def test_every_line_names_TCT_and_the_header_owns_the_second_time():
+def test_every_line_names_TCT_and_the_header_does_not_explain_the_rest():
     # ⚠️ Each line carries its own unit because a ping gets quoted and
     # screenshotted out of context, and a bare "02:00" beside a second number
     # reads as the reader's own timezone.
     #
-    # ⚠️ The second time's zone NAME cannot be printed: Discord renders
-    # <t:…:t> client-side and the bot never learns the reader's timezone.
-    # Printing the server's would give a member in London a confident, wrong
-    # label — so the header says whose clock it is instead.
+    # ⚠️ The second time is deliberately NOT explained. With "TCT" on the line
+    # the pairing reads for itself, and the explanation was noise on every
+    # message. It could not be labelled properly anyway: Discord renders it in
+    # the reader's own zone, client-side, so the bot never learns which.
     import chain_formatter as f
     body = f.build_gap_ping([{"hour": hour(1, []), "open_slots": 1, "stage": "first"}])
     assert "TCT ·" in body
-    assert "second time is your own" in body
+    assert "your own" not in body
+    assert body.startswith("**1 hour still needs cover** · sign up on the dashboard")
 
 
 def test_nothing_is_sent_when_no_gap_is_new(monkeypatch, forge):

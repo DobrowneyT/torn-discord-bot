@@ -279,11 +279,12 @@ def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[st
             lines.append(f"🔴 {when} — {slots}{nobody}{bonus}")
 
     subject = "hour still needs" if len(gaps) == 1 else "hours still need"
-    return (f"**{len(gaps)} {subject} cover** "
-            # Each line carries TCT itself now, so the header only has to
-            # explain the SECOND time — which cannot be labelled, because
-            # Discord renders it in the reader's own zone, client-side.
-            f"— second time is your own · sign up on the dashboard\n"
+    # ⚠️ The second time is deliberately NOT explained. Once each line carries
+    # "TCT" the pairing reads for itself — one labelled time, one in your own
+    # clock — and saying so was noise on every message. It could not be
+    # labelled properly anyway: Discord renders it in the reader's own zone,
+    # client-side, so the bot never learns which zone that is.
+    return (f"**{len(gaps)} {subject} cover** · sign up on the dashboard\n"
             + "\n".join(lines))
 
 
