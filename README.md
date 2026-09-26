@@ -1,6 +1,23 @@
-# OC Watcher — Discord Bot
+# Choonbot — Torn Discord Bot
 
-Self-contained Discord bot that polls the Torn faction-crimes API every minute and maintains a single edit-in-place message in a channel, flagging:
+One bot, one Discord token, one process — currently running two features for
+TNL's factions:
+
+- **OC Watcher** — organised-crime alerts (below), single-faction.
+- **Chain Watch** — the hourly chain-watcher board and its pings, across up to
+  five factions (see the sections further down).
+
+⚠️ **They share a process on purpose.** Two processes on one Discord token open
+two gateway connections, and Discord routes each interaction to only one of
+them — so the OC watcher's override button would silently stop working about
+half the time, with nothing logged.
+
+Deployed on the VPS as the **`choonbot`** systemd service.
+
+## OC Watcher
+
+Polls the Torn faction-crimes API every minute and maintains a single
+edit-in-place message in a channel, flagging:
 
 1. **Missing items** — crime executes in ≤24 h and an assigned member doesn't have the slot's required item.
 2. **Unavailable members** — crime executes in ≤6 h and a member is in Hospital / Jail / Abroad / Traveling. The list updates live as members come back online.
@@ -249,11 +266,27 @@ If the bot lacks Manage Threads, it logs a warning and silently skips the edit �
 To keep it alive across logouts, run under tmux/systemd/etc.:
 
 ```bash
-tmux new -s oc-watcher
+tmux new -s choonbot
 source .venv/bin/activate
 python bot.py
 # Ctrl-b d to detach
 ```
+
+On the VPS it runs as a systemd unit:
+
+```bash
+sudo systemctl restart choonbot
+journalctl -u choonbot -f
+```
+
+⚠️ **The `oc_watcher` logger name stays.** It is what labels which FEATURE
+emitted a line — Chain Watch logs under `chain_*` — so renaming it to match the
+service would lose the one thing that makes a mixed journal readable.
+
+⚠️ **`oc_watcher_manage_overrides_v1` stays too, and must never change.** It is
+the custom_id baked into the override button on the board message already
+posted in Discord. Rename it and every existing button routes to an id the bot
+no longer registers: the button does nothing, forever, with no error anywhere.
 
 ## Files
 
