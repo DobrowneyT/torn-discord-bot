@@ -43,18 +43,35 @@ def _ts(ms: int, style: str = "t") -> str:
     return f"<t:{int(ms // 1000)}:{style}>"
 
 
-def _who(watcher: Dict) -> str:
+def _who(watcher: Dict, *, compact: bool = False) -> str:
     """
-    How a watcher is named on the board.
+    How a watcher is named.
 
     ⚠️ `Name [ID]` when we have no Discord link (#784), never a bare name.
     Leadership has to be able to see exactly who to chase, and the id is what
     tells two members with similar display names apart — the same reason every
     sign-up keys on the Torn id rather than the name the sheet used.
+
+    ⚠️ **`compact` exists because an embed cannot be made wider.** Its width is
+    fixed by the Discord client; there is no API for it. A mention renders as
+    the member's SERVER NICKNAME, and a convention like
+    "MonChoon_616 [2250591] (TNLF)" is 30 characters — two of those plus the
+    time prefix is ~84, against the ~55-60 a row fits. So two watchers can
+    never share a row while mentions are used, however the text is arranged.
+    Compact drops to the Torn name and fits in ~46.
+
+    ⚠️ Nothing is lost by it on the BOARD: a mention inside an embed is a blue
+    link that notifies nobody. The notification happens in the shift ping,
+    which `mention_members` governs separately and which compact never touches.
     """
     name = watcher.get("name") or "unknown"
     member_id = watcher.get("member_id")
     discord_id = watcher.get("discord_id")
+    if compact:
+        # ⚠️ The id survives for UNLINKED members even here. It is the one
+        # thing a leader needs in order to fix the link, and those are the
+        # minority of rows, so it costs little width.
+        return name if discord_id else (f"{name} [{member_id}]" if member_id else name)
     if discord_id:
         return f"<@{discord_id}>"
     return f"{name} [{member_id}]" if member_id else name
@@ -87,7 +104,7 @@ def _travel_phrase(travel: Dict) -> str:
     return f"✈️ {where} (arrival unknown)"
 
 
-def _hour_line(hour: Dict, slots_per_hour: int) -> str:
+def _hour_line(hour: Dict, slots_per_hour: int, *, compact: bool = False) -> str:
     watchers = hour.get("watchers", [])
     open_slots = max(0, slots_per_hour - len(watchers))
 
@@ -105,7 +122,8 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
         # ⚠️ Flying is shown ON the row, as a band rather than a point — Torn's
         # flight times carry variance and a stated minute is a promise we
         # cannot keep.
-        names.append(f"{_who(w)} {_travel_phrase(travel)}" if travel else _who(w))
+        who = _who(w, compact=compact)
+        names.append(f"{who} {_travel_phrase(travel)}" if travel else who)
 
     if open_slots:
         names.append("*nobody signed up*" if open_slots == slots_per_hour
@@ -120,7 +138,8 @@ def _hour_line(hour: Dict, slots_per_hour: int) -> str:
             + ", ".join(names))
 
 
-def _hour_lines(hours: List[Dict], slots_per_hour: int) -> List[str]:
+def _hour_lines(hours: List[Dict], slots_per_hour: int, *,
+                compact: bool = False) -> List[str]:
     """
     One line per hour, except that a RUN of completely empty hours collapses
     into one.
@@ -141,7 +160,7 @@ def _hour_lines(hours: List[Dict], slots_per_hour: int) -> List[str]:
         if not run:
             return
         if len(run) == 1:
-            out.append(_hour_line(run[0], slots_per_hour))
+            out.append(_hour_line(run[0], slots_per_hour, compact=compact))
         else:
             first, last = run[0], run[-1]
             out.append(
@@ -156,13 +175,13 @@ def _hour_lines(hours: List[Dict], slots_per_hour: int) -> List[str]:
             run.append(h)
             continue
         flush()
-        out.append(_hour_line(h, slots_per_hour))
+        out.append(_hour_line(h, slots_per_hour, compact=compact))
     flush()
     return out
 
 
 def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
-                stale: bool = False) -> List[discord.Embed]:
+                stale: bool = False, compact: bool = False) -> List[discord.Embed]:
     """The standing board: what is covered, what is not, and where the chain is going."""
     event = watch.get("event", {})
     slots_per_hour = int(event.get("slots_per_hour", 2))
@@ -208,7 +227,7 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
         lines.append(f"**Every slot in the next {horizon_hours} hours is covered.**")
     lines.append("")
 
-    lines.extend(_hour_lines(hours[:hours_shown], slots_per_hour))
+    lines.extend(_hour_lines(hours[:hours_shown], slots_per_hour, compact=compact))
 
     embed = discord.Embed(
         title=f"{EMBED_TITLE} — {event.get('title', 'Chain')}",

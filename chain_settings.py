@@ -80,6 +80,15 @@ SETTINGS: Dict[str, Setting] = {
         # ⚠️ The debounce for dashboard nudges. Leadership filling a rota
         # assigns eight slots in twenty seconds; without coalescing that is
         # eight redraws and a board that flickers while somebody works.
+        # ⚠️ An embed CANNOT be made wider — its width is fixed by the Discord
+        # client and there is no API for it. A mention renders as the member's
+        # server nickname, so "MonChoon_616 [2250591] (TNLF)" is 30 characters;
+        # two of those plus the time is ~84 against the ~55-60 a row fits. This
+        # is the only way to get one hour per line.
+        Setting("board_compact", False, "bool",
+                "Use plain Torn names on the board instead of mentions, so an "
+                "hour fits on one line. Shift pings are unaffected — a mention "
+                "in an embed never notified anybody anyway."),
         Setting("board_debounce_seconds", 5, "int",
                 "After the dashboard says a slot changed, how long to wait for "
                 "more changes before redrawing.", lo=1, hi=60),

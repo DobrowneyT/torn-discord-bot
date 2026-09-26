@@ -124,6 +124,7 @@ class ChainWatcher:
         embeds = chain_formatter.build_board(
             {**payload, "hours": hours}, now_ms=now_ms,
             hours_shown=chain_settings.get(slug, "board_hours_shown"),
+            compact=chain_settings.get(slug, "board_compact"),
             stale=stale)
         message_id = await self.sender.board(
             tenant.board_channel_id, embeds, self._board_messages.get(slug))
