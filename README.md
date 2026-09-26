@@ -160,11 +160,21 @@ types its options as `discord.TextChannel`, so Discord rejects a thread against
 them before the command runs — `/chain channel` reads where it was typed, which
 works for a channel and a thread alike.
 
-⚠️ **Threads auto-archive, and an archived thread refuses writes.** The board is
-EDITED rather than re-posted, so a board in a quiet thread would silently freeze
-at whatever it last said. The bot re-opens the thread before writing (it holds
-Manage Threads), but a short archive time still means a stale board between
-chains.
+⚠️ **Threads auto-archive, and only the BOARD is affected.** Pings are always new
+messages, and a new message un-archives a thread by itself — they keep their own
+channel awake. The board is the one surface that is *edited*, so it is the only
+one that can freeze inside a sleeping thread. Before an edit (and only then) the
+bot wakes the thread by posting a single character and deleting it —
+⚠️ `thread.edit(archived=False)` does **not** work, which the OC watcher
+established the hard way: its strategies A and B do exactly that and are both
+commented out in `bot.py` to this day.
+
+⚠️ **`/chain channel` refuses to move a board that is already posting elsewhere**
+unless you pass `move:True`, and links to where it is running. A board silently
+relocating leaves the old one frozen in a channel people still watch.
+`/chain stop` shuts a faction down and takes its messages with it.
+
+`/chain help` explains all of this in Discord, with worked examples.
 
 ⚠️ **One board channel and one ping channel per faction.** Posting the same board
 to two places means two copies that drift the moment one edit fails, and no way

@@ -21,9 +21,13 @@ class FakeMessage:
     def __init__(self, id):
         self.id = id
         self.edits = 0
+        self.deleted = False
 
     async def edit(self, **kwargs):
         self.edits += 1
+
+    async def delete(self):
+        self.deleted = True
 
 
 class FakeChannel:
@@ -319,17 +323,22 @@ class FakeThread:
     def __init__(self, archived):
         self.archived = archived
         self.id = 77
-        self.woken = False
+        self.nudged = False
         self.sent = []
 
     async def edit(self, **kw):
-        if kw.get("archived") is False:
-            self.archived = False
-            self.woken = True
+        # ⚠️ Deliberately does NOT un-archive. The OC watcher tried exactly
+        # this (its strategies A and B) and both are commented out in bot.py
+        # because they did not work — Discord un-archives on a new MESSAGE.
+        pass
 
     async def send(self, *a, **kw):
-        if self.archived:
-            raise AssertionError("wrote to an archived thread")
+        # ⚠️ The wake NUDGE and an ordinary post both call send(); only the
+        # nudge carries the single middle dot. Conflating them made a live
+        # thread look "woken" by its own board post.
+        if kw.get("content") == "\u00b7":
+            self.nudged = True
+        self.archived = False          # a message is what wakes it
         self.sent.append(kw)
         return FakeMessage(900)
 
@@ -337,33 +346,83 @@ class FakeThread:
         return FakeMessage(mid)
 
 
-def test_an_archived_thread_is_re_opened_before_the_board_is_drawn(monkeypatch):
+def test_an_archived_thread_is_re_opened_before_the_board_is_EDITED(monkeypatch):
+    # ⚠️ The edit path is the only one that needs it, and the only one that can
+    # fail silently: an edit does not un-archive, so a board in a sleeping
+    # thread would freeze at whatever it last said.
     th = FakeThread(archived=True)
     monkeypatch.setattr(discord, "Thread", FakeThread)
     client = FakeClient({1: th})
-    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], None))
-    assert th.woken, "a board in an archived thread would silently freeze"
-    assert th.sent
+    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], 55))
+    assert th.nudged, "a board edited in an archived thread would silently freeze"
 
 
-def test_an_archived_thread_is_re_opened_before_a_ping(monkeypatch):
+def test_a_ping_needs_no_nudge_because_posting_wakes_the_thread(monkeypatch):
+    # ⚠️ MonChoon's point, and it is the difference between this bot's two
+    # jobs: pings are always NEW messages, and a new message un-archives a
+    # thread by itself. Nudging first would be a wasted call and a visible
+    # flash for nothing.
     th = FakeThread(archived=True)
     monkeypatch.setattr(discord, "Thread", FakeThread)
     client = FakeClient({1: th})
     client.user = type("U", (), {"id": 7})()
     asyncio.run(chain_bot_sender.DiscordSender(client).say(1, "hi"))
-    assert th.woken
+    assert not th.nudged, "the ping itself is what wakes the thread"
+    assert th.sent and th.archived is False
 
 
 def test_a_live_thread_is_left_alone(monkeypatch):
     th = FakeThread(archived=False)
     monkeypatch.setattr(discord, "Thread", FakeThread)
     client = FakeClient({1: th})
-    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], None))
-    assert not th.woken, "no need to touch a thread that is already open"
+    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], 55))
+    assert not th.nudged, "no need to nudge a thread that is already open"
+
+
+def test_the_first_board_post_needs_no_nudge_either(monkeypatch):
+    # ⚠️ Same rule: with no message to edit, the board is POSTED, and posting
+    # wakes the thread.
+    th = FakeThread(archived=True)
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    asyncio.run(chain_bot_sender.DiscordSender(FakeClient({1: th})).board(1, [], None))
+    assert not th.nudged
+    assert th.sent
 
 
 def test_an_ordinary_channel_is_never_treated_as_a_thread():
     ch = FakeChannel()
     n = asyncio.run(chain_bot_sender.DiscordSender(FakeClient({1: ch})).board(1, [], None))
     assert n == 901
+
+
+def test_the_wake_is_a_message_and_not_an_edit(monkeypatch):
+    # ⚠️ The correction that matters. The OC watcher tried thread.edit(
+    # archived=False) as strategies A and B; both are commented out in bot.py
+    # because they did not work. Discord un-archives on a new MESSAGE, and an
+    # edit to an existing message is not that — it also fails to bump the
+    # thread in the sidebar, so a board edited inside a collapsed thread is a
+    # board nobody sees change.
+    th = FakeThread(archived=True)
+    th.edits = []
+
+    async def record_edit(**kw):
+        th.edits.append(kw)
+
+    th.edit = record_edit
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    asyncio.run(chain_bot_sender.DiscordSender(FakeClient({1: th})).board(1, [], 55))
+    assert th.nudged, "should have posted to wake it"
+    assert th.edits == [], "must not rely on thread.edit(archived=False)"
+
+
+def test_the_wake_nudge_is_removed_again(monkeypatch):
+    # ⚠️ Visible for a moment, then gone. Leaving a stray "·" in the channel
+    # every time a thread archives would be its own kind of spam.
+    th = FakeThread(archived=True)
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    # ⚠️ 55, not None: the nudge only happens on the EDIT path, because a post
+    # wakes the thread by itself.
+    asyncio.run(chain_bot_sender.DiscordSender(FakeClient({1: th})).board(1, [], 55))
+    nudges = [m for m in th.sent if m.get("content") == "·"]
+    assert len(nudges) == 1
+    assert nudges, "and it must be deleted again — see FakeMessage.deleted"

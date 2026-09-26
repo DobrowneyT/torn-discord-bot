@@ -953,3 +953,26 @@ def test_the_new_ping_lands_before_the_old_one_is_removed(monkeypatch, forge):
     s.fail = True
     run(watcher, forge, TOP + 2 * HOUR - 60_000)
     assert first not in s.deleted, "a failed replacement must not delete the old one"
+
+
+def test_two_factions_can_share_one_channel(monkeypatch, forge):
+    # ⚠️ Not a configuration anybody wants, but nothing should BREAK if two
+    # factions are pointed at the same thread: the board id, the gap message
+    # and the ledger are all keyed by slug, so they must not collide.
+    chain_tenants.add("tnl", "https://tnl.monchoon.me", 11, 100, 101)
+    monkeypatch.setenv("CHAIN_WATCH_TOKEN_TNL", "t")
+    tnl = chain_tenants.get("tnl")
+
+    async def _fetch(tenant):
+        return payload([hour(4, [])])
+
+    monkeypatch.setattr(cw.chain_api, "fetch", _fetch)
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    asyncio.run(watcher.tick_all(TOP))
+
+    assert chain_posts.board_message("forge") != chain_posts.board_message("tnl")
+    assert len(chain_posts.posts_for("forge", "gap")) == 1
+    assert len(chain_posts.posts_for("tnl", "gap")) == 1
+    # Two boards and two gap messages in the one channel — four in total.
+    assert len(s.boards) == 2 and len(gap_msgs(s)) == 2
