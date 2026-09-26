@@ -236,3 +236,14 @@ def test_compact_does_not_touch_the_shift_ping():
     # point of it and why compact never reaches this far.
     assert "<@42>" in f.build_shift_ping(
         [{"name": "A", "member_id": "1", "discord_id": 42}], hour_start=TOP + HOUR)
+
+
+def test_the_board_carries_when_it_was_last_updated():
+    # ⚠️ The embed's timestamp field, not footer text. Discord renders it in
+    # each reader's own timezone and keeps showing the real age, so a board the
+    # bot has stopped editing visibly drifts instead of looking current.
+    # Footer text carries no markdown and no <t:…>, so a stamp written there
+    # would be the SERVER's clock — wrong for every reader elsewhere.
+    e = board([hour(1, [w("A"), w("B")])])
+    assert e.timestamp is not None
+    assert abs(e.timestamp.timestamp() * 1000 - NOW) < 1000

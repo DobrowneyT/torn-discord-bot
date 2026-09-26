@@ -245,19 +245,27 @@ class ChainWatcher:
                                    channel_id=tenant.pings_to, hours=[hour_start])
 
     async def _gap_pings(self, tenant, payload: Dict, now_ms: int) -> None:
+        """
+        ONE standing "needs cover" message per faction, reconciled every tick.
+
+        ⚠️ **One message, not one per batch.** Posting a fresh message each time
+        a new hour entered the horizon meant roughly one post an hour — about
+        288 over a twelve-day chain, each still true, none of them removable
+        while any hour in it was still in the future. The channel filled with
+        overlapping claims and a reader could not tell which was current.
+
+        ⚠️ **It is RE-POSTED, not merely edited, when there is something new to
+        say.** An edit notifies nobody and does not move the message, so a gap
+        that appeared while everyone was asleep would sit silently in the
+        backlog. A new hour, or an hour crossing into last-call, earns a fresh
+        post; anything else — slots filling, hours passing — is a silent edit.
+        """
         slug = tenant.slug
-        # ⚠️ The horizon comes from the payload, never from a constant here, so
-        # the channel and the dashboard page cannot disagree about what "soon"
-        # means (#782).
+        # ⚠️ The horizon comes from the payload, never a constant here, so the
+        # channel and the dashboard page cannot disagree about "soon" (#782).
         horizon_ms = int(payload.get("gap_horizon_hours") or 6) * HOUR_MS
 
-        # ⚠️ Collected, then sent as ONE message. One post per hour was four in
-        # a row the first time this ran live, because every hour inside the
-        # horizon entered it at once — and four posts is how a channel learns
-        # to mute the bot.
         gaps: List[Dict] = []
-        keys: List[str] = []
-
         for hour in payload.get("hours", []):
             hour_start = hour["hour_start"]
             until = hour_start - now_ms
@@ -269,35 +277,101 @@ class ChainWatcher:
                                  - len(hour.get("watchers", [])))
             if open_slots <= 0:
                 continue
-            stage = "last-call" if until <= LAST_CALL_HOURS * HOUR_MS else "first"
-            # ⚠️ A gap announced on entry and still empty gets ONE more message,
-            # then silence. Re-announcing every cycle is what trains a channel
-            # to ignore the bot.
-            if stage == "last-call" and chain_ledger.already_sent(
-                    slug, chain_ledger.gap_key(hour_start, "last-call")):
-                continue
-            key = chain_ledger.gap_key(hour_start, stage)
-            if chain_ledger.already_sent(slug, key):
-                continue
-            gaps.append({"hour": hour, "open_slots": open_slots, "stage": stage})
-            keys.append(key)
+            gaps.append({
+                "hour": hour, "open_slots": open_slots,
+                "stage": "last-call" if until <= LAST_CALL_HOURS * HOUR_MS else "first",
+            })
+
+        existing = next(iter(chain_posts.posts_for(slug, "gap")), None)
 
         if not gaps:
+            # ⚠️ Everything covered: the message has nothing left to ask for.
+            if existing:
+                await self.sender.delete(existing["channel_id"], existing["message_id"])
+                chain_posts.forget(slug, existing["message_id"])
             return
+
         content = chain_formatter.build_gap_ping(gaps, last_call_hours=LAST_CALL_HOURS)
         if content is None:
             return
+        hours_now = [g["hour"]["hour_start"] for g in gaps]
+        stages_now = {str(g["hour"]["hour_start"]): g["stage"] for g in gaps}
+
+        if existing is None:
+            message_id = await self.sender.say(tenant.pings_to, content)
+            if message_id:
+                chain_posts.record(slug, kind="gap", message_id=message_id,
+                                   channel_id=tenant.pings_to, hours=hours_now,
+                                   content=content, stages=stages_now)
+            return
+
+        was_hours = {int(h) for h in existing.get("hours", [])}
+        was_stages = existing.get("stages", {})
+        appeared = [h for h in hours_now if h not in was_hours]
+        # ⚠️ Compared against the RECORDED stage, not recomputed from the clock.
+        # Recomputing would call every last-call hour "new" on every tick and
+        # re-post forever.
+        urgent = [h for h in hours_now
+                  if stages_now[str(h)] == "last-call"
+                  and was_stages.get(str(h)) != "last-call"]
+
+        if appeared or urgent:
+            await self.sender.delete(existing["channel_id"], existing["message_id"])
+            chain_posts.forget(slug, existing["message_id"])
+            message_id = await self.sender.say(tenant.pings_to, content)
+            if message_id:
+                chain_posts.record(slug, kind="gap", message_id=message_id,
+                                   channel_id=tenant.pings_to, hours=hours_now,
+                                   content=content, stages=stages_now)
+            return
+
+        # ⚠️ Only when the text actually changed. Editing every tick is a
+        # Discord call per five minutes, for the length of the event, to
+        # produce identical words.
+        if content != existing.get("content"):
+            alive = await self.sender.edit(
+                existing["channel_id"], existing["message_id"], content)
+            if alive:
+                chain_posts.update(slug, existing["message_id"], content,
+                                   hours=hours_now, stages=stages_now)
+            else:
+                chain_posts.forget(slug, existing["message_id"])
+
+    async def _send_once(self, tenant, key: str, content: Optional[str],
+                         hour_ms: Optional[int] = None, kind: str = "shift") -> None:
+        if content is None or chain_ledger.already_sent(tenant.slug, key):
+            return
         message_id = await self.sender.say(tenant.pings_to, content)
-        if message_id:
-            chain_posts.record(slug, kind="gap", message_id=message_id,
-                               channel_id=tenant.pings_to,
-                               hours=[g["hour"]["hour_start"] for g in gaps],
-                               content=content)
-        # ⚠️ Marked only AFTER the send. Marking first would silently swallow
-        # every gap in a tick whose message failed to deliver, and those hours
-        # would then never be announced at all.
-        for key in keys:
-            chain_ledger.mark_sent(slug, key)
+        chain_ledger.mark_sent(tenant.slug, key)
+        if message_id and hour_ms is not None:
+            chain_posts.record(tenant.slug, kind=kind, message_id=message_id,
+                               channel_id=tenant.pings_to, hours=[hour_ms])
+
+    async def _tidy_posts(self, tenant, payload: Dict, now_ms: int) -> None:
+        """
+        Remove shift pings whose hour is over.
+
+        ⚠️ Gap posts are NOT handled here. `_gap_pings` owns the single standing
+        "needs cover" message and reconciles it every tick; touching it here too
+        would mean two writers for one message, and they would fight.
+
+        ⚠️ Flight warnings are kept. They record WHY a slot went uncovered, and
+        a lead asking "why did nobody hit at 04:00" is asking during payout
+        review — after the chain has finished, which is exactly when a sweep
+        would otherwise have deleted the evidence.
+        """
+        slug = tenant.slug
+        # ⚠️ Minutes, and 0 is meaningful: remove the ping the moment its hour
+        # ends. The old hours-based setting overloaded 0 to mean "never", so
+        # the most likely wish was the one thing it could not express.
+        grace_ms = chain_settings.get(slug, "ping_cleanup_minutes") * 60_000
+
+        for post in chain_posts.posts_for(slug):
+            if post.get("kind") in ("gap", "flight"):
+                continue
+            if all(h + HOUR_MS + grace_ms <= now_ms for h in post["hours"]):
+                await self.sender.delete(post["channel_id"], post["message_id"])
+                chain_posts.forget(slug, post["message_id"])
 
     async def _send_once(self, tenant, key: str, content: Optional[str],
                          hour_ms: Optional[int] = None, kind: str = "shift") -> None:
@@ -339,8 +413,58 @@ class ChainWatcher:
                 await self.sender.delete(post["channel_id"], post["message_id"])
                 chain_posts.forget(slug, post["message_id"])
                 continue
-            if post.get("kind") != "gap":
+            # ⚠️ Gap posts are reconciled every tick by _gap_pings, which owns
+            # the single standing message. Touching them here as well would
+            # mean two writers for one message, and they would fight.
+            if post.get("kind") == "gap":
                 continue
+
+    async def _send_once(self, tenant, key: str, content: Optional[str],
+                         hour_ms: Optional[int] = None, kind: str = "shift") -> None:
+        if content is None or chain_ledger.already_sent(tenant.slug, key):
+            return
+        message_id = await self.sender.say(tenant.pings_to, content)
+        chain_ledger.mark_sent(tenant.slug, key)
+        if message_id and hour_ms is not None:
+            chain_posts.record(tenant.slug, kind=kind, message_id=message_id,
+                               channel_id=tenant.pings_to, hours=[hour_ms])
+
+    async def _tidy_posts(self, tenant, payload: Dict, now_ms: int) -> None:
+        """
+        Revise or remove pings that have stopped being true.
+
+        ⚠️ Two different ways of stopping being true, and they want different
+        answers. A gap that somebody FILLED should lose that line — the message
+        is a request, and the request was met. A gap whose hour has simply
+        PASSED is history, and history in a ping channel is clutter.
+
+        ⚠️ A shift ping is never revised, only removed. "Your shift starts in
+        five minutes" has no live state to correct; it was true when sent.
+        """
+        slug = tenant.slug
+        # ⚠️ Minutes, and 0 is meaningful: remove the ping the moment its hour
+        # ends. The old hours-based setting overloaded 0 to mean "never", so
+        # the most likely wish was the one thing it could not express.
+        grace_ms = chain_settings.get(slug, "ping_cleanup_minutes") * 60_000
+        by_hour = {h["hour_start"]: h for h in payload.get("hours", [])}
+
+        for post in chain_posts.posts_for(slug):
+            # ⚠️ Flight warnings are kept. They record why a slot went
+            # uncovered, and a lead asking "why did nobody hit at 04:00" during
+            # payout review is asking after the chain has finished.
+            if post.get("kind") == "flight":
+                continue
+            expired = all(h + HOUR_MS + grace_ms <= now_ms for h in post["hours"])
+            if expired:
+                await self.sender.delete(post["channel_id"], post["message_id"])
+                chain_posts.forget(slug, post["message_id"])
+                continue
+            # ⚠️ Gap posts are reconciled every tick by _gap_pings, which owns
+            # the single standing message. Revising them here too would mean
+            # two writers for one message.
+            if post.get("kind") == "gap":
+                continue
+            continue
 
             live = []
             for hour_ms in post["hours"]:

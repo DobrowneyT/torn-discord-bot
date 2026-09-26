@@ -15,6 +15,7 @@ import chain_api
 import chain_identity as ci
 import chain_ledger
 import chain_settings
+import chain_posts
 import chain_tenants
 import chain_watcher as cw
 
@@ -519,12 +520,13 @@ def test_a_shift_ping_is_removed_but_never_revised(monkeypatch, forge):
 def test_a_long_grace_effectively_keeps_everything(monkeypatch, forge):
     # ⚠️ The replacement for the old `ping_cleanup_hours: 0`. Minutes carries no
     # sentinel, so "never" is expressed as the maximum — a week, which outlives
-    # any chain.
+    # any chain. It governs SHIFT pings; the standing gap message has its own
+    # lifecycle and goes when its hours are covered or gone.
     chain_settings.set_value("forge", "ping_cleanup_minutes", "10080")
-    serve(monkeypatch, payload([hour(1, [])]))
+    serve(monkeypatch, payload([hour(1, [w("1", "A"), w("2", "B")])]))
     s = FakeSender()
     watcher = cw.ChainWatcher(s)
-    run(watcher, forge, TOP)
+    run(watcher, forge, TOP + HOUR - 60_000)
     run(watcher, forge, TOP + 5 * HOUR)
     assert s.deleted == []
 
@@ -770,3 +772,98 @@ def test_a_flying_partner_is_named_but_flagged(monkeypatch, forge):
     assert "✈️" in ordinary[-1]["content"]
     assert "<@11>" not in ordinary[-1]["content"], "already warned — do not re-ping"
     assert "only watcher" not in ordinary[-1]["content"]
+
+
+# ── one standing gap message (MonChoon's screenshot, 2026-09-26) ─────────────
+#
+# ⚠️ What he saw: three separate "N hours still need cover" posts at 3:03, 3:59
+# and 5:04, all still up. Each was TRUE and none was removable, because each
+# covered hours still in the future. Posting per batch means roughly one message
+# an hour — about 288 over a twelve-day chain.
+
+def gap_msgs(sender):
+    return [m for m in sender.said if "still need" in m["content"]]
+
+
+def test_a_new_hour_replaces_the_message_rather_than_adding_one(monkeypatch, forge):
+    serve(monkeypatch,
+          payload([hour(4, [])]),
+          payload([hour(4, []), hour(5, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    first = gap_msgs(s)[0]["id"]
+    run(watcher, forge, TOP + 60_000)
+    # ⚠️ Re-posted, not merely edited: an edit notifies nobody and does not
+    # move the message, so a gap appearing overnight would sit silently in the
+    # backlog. But the old one goes, so there is only ever ONE.
+    assert first in s.deleted
+    assert len(chain_posts.posts_for("forge", "gap")) == 1
+    assert "2 hours still need cover" in gap_msgs(s)[-1]["content"]
+
+
+def test_a_slot_filling_edits_silently_rather_than_re_posting(monkeypatch, forge):
+    # ⚠️ Good news does not need to buzz anybody. Only a NEW gap, or one
+    # crossing into last-call, earns a fresh post.
+    serve(monkeypatch,
+          payload([hour(4, []), hour(5, [])]),
+          payload([hour(4, [w("1", "A"), w("2", "B")]), hour(5, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    run(watcher, forge, TOP + 60_000)
+    assert len(gap_msgs(s)) == 1, "should not have re-posted"
+    assert len(s.edited) == 1
+    assert "1 hour still needs cover" in s.edited[0]["content"]
+
+
+def test_the_message_goes_when_everything_is_covered(monkeypatch, forge):
+    serve(monkeypatch,
+          payload([hour(4, [])]),
+          payload([hour(4, [w("1", "A"), w("2", "B")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    posted = gap_msgs(s)[0]["id"]
+    run(watcher, forge, TOP + 60_000)
+    assert posted in s.deleted
+    assert chain_posts.posts_for("forge", "gap") == []
+
+
+def test_crossing_into_last_call_re_posts_once_and_then_stays_quiet(monkeypatch, forge):
+    # ⚠️ Compared against the RECORDED stage, not recomputed from the clock —
+    # recomputing would call every last-call hour "new" on every tick and
+    # re-post forever.
+    serve(monkeypatch, payload([hour(4, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)                       # 4h out: "first"
+    assert len(gap_msgs(s)) == 1
+    run(watcher, forge, TOP + 2 * HOUR + 60_000)   # now inside 2h: last-call
+    assert len(gap_msgs(s)) == 2
+    for m in (5, 10, 15, 20):
+        run(watcher, forge, TOP + 2 * HOUR + m * 60_000)
+    assert len(gap_msgs(s)) == 2, "last-call must announce once, then be quiet"
+
+
+def test_an_unchanged_situation_does_not_even_edit(monkeypatch, forge):
+    serve(monkeypatch, payload([hour(4, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)
+    for m in (5, 10, 15):
+        run(watcher, forge, TOP + m * 60_000)
+    assert len(gap_msgs(s)) == 1
+    assert s.edited == []
+
+
+def test_never_more_than_one_gap_message_over_a_long_run(monkeypatch, forge):
+    # ⚠️ The whole point. Hours entering the horizon one at a time is the normal
+    # shape of a twelve-day chain, and it used to mean a message per hour.
+    hours = [hour(i, []) for i in range(1, 12)]
+    serve(monkeypatch, *[payload(hours) for _ in range(12)])
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    for h in range(12):
+        run(watcher, forge, TOP + h * HOUR)
+        assert len(chain_posts.posts_for("forge", "gap")) <= 1, f"tick {h}"

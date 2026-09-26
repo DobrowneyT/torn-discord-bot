@@ -61,7 +61,8 @@ def _save(posts: Dict[str, List[Dict]]) -> None:
 
 
 def record(slug: str, *, kind: str, message_id: int, channel_id: int,
-           hours: List[int], content: str = "") -> None:
+           hours: List[int], content: str = "",
+           stages: Optional[Dict[str, str]] = None) -> None:
     """
     Remember a ping so it can be revised or removed later.
 
@@ -76,6 +77,11 @@ def record(slug: str, *, kind: str, message_id: int, channel_id: int,
         "channel_id": int(channel_id),
         "hours": [int(h) for h in hours],
         "content": content,
+        # ⚠️ Which hours were already announced as "last call". Without it the
+        # standing gap message cannot tell a NEW urgency from one it has
+        # already shouted about, and would re-post every tick once any hour
+        # crossed the two-hour line.
+        "stages": stages or {},
         "at": _now_ms(),
     })
     _save(posts)
@@ -86,11 +92,17 @@ def posts_for(slug: str, kind: Optional[str] = None) -> List[Dict]:
     return [p for p in items if kind is None or p.get("kind") == kind]
 
 
-def update(slug: str, message_id: int, content: str) -> None:
+def update(slug: str, message_id: int, content: str,
+           hours: Optional[List[int]] = None,
+           stages: Optional[Dict[str, str]] = None) -> None:
     posts = _posts()
     for p in posts.get(slug, []):
         if p["message_id"] == int(message_id):
             p["content"] = content
+            if hours is not None:
+                p["hours"] = [int(h) for h in hours]
+            if stages is not None:
+                p["stages"] = stages
             _save(posts)
             return
 
