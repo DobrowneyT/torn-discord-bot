@@ -566,3 +566,63 @@ def test_the_pings_come_down_when_the_chain_ends(monkeypatch, forge):
     posted = s.said[0]["id"]
     run(watcher, forge, TOP + 60_000)
     assert s.deleted == [posted]
+
+
+# ── a board failure must not silence the pings (live incident) ───────────────
+#
+# ⚠️ What happened: the dashboard served the hit rate as `hitsPerHour` while the
+# formatter read `hits_per_hour`, so once the chain had 24h of history and the
+# projection became MEASURABLE, build_board raised KeyError. It raised out of
+# _draw_board, the whole tick aborted, and nobody was told their shift had
+# started. It had worked for days first, because an unmeasurable projection
+# never touches that field.
+
+def test_a_board_that_cannot_render_still_lets_the_pings_through(monkeypatch, forge):
+    # ⚠️ A stale board is cosmetic. A missed shift ping is a slot nobody covers.
+    serve(monkeypatch, payload([hour(1, [w("1", "Goosey"), w("2", "Muttley")])]))
+    monkeypatch.setattr(cw.chain_formatter, "build_board",
+                        lambda *a, **k: (_ for _ in ()).throw(KeyError("hits_per_hour")))
+    s = FakeSender()
+    run(cw.ChainWatcher(s), forge, TOP + HOUR - 60_000)
+    assert s.boards == []                       # the board genuinely failed
+    assert len(s.said) == 1                     # and the ping went anyway
+    assert "Goosey" in s.said[0]["content"]
+
+
+def test_one_broken_step_does_not_suppress_the_others(monkeypatch, forge):
+    # Gap pings must still fire when shift pings blow up, and vice versa.
+    serve(monkeypatch, payload([hour(1, [w("1", "A")]), hour(3, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    monkeypatch.setattr(watcher, "_shift_pings",
+                        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+    run(watcher, forge, TOP + HOUR - 60_000)
+    assert any("still need" in m["content"] for m in s.said), "gap ping should survive"
+
+
+def test_a_measured_projection_renders_with_either_spelling():
+    # ⚠️ Both, because a bot deployed before the dashboard fix sees camelCase
+    # and one deployed after sees snake_case.
+    import chain_formatter as f
+    base = {"event": {"title": "T", "slots_per_hour": 2}, "chain": None,
+            "gap_horizon_hours": 6, "hours": []}
+    band = {"measured": True, "earliest": TOP + 40 * HOUR, "latest": TOP + 60 * HOUR}
+    # ⚠️ 243.0, not 242.5 — Python rounds half to EVEN, so "{242.5:.0f}" is
+    # "242" and a test asserting 243 fails for a reason unrelated to spelling.
+    for key in ("hits_per_hour", "hitsPerHour"):
+        d = f.build_board({**base, "projection": {**band, key: 243.0}},
+                          now_ms=NOW)[0].description
+        assert "243 hits/h" in d, key
+
+
+def test_a_band_with_no_rate_at_all_still_renders():
+    # ⚠️ The rate is optional in the rendering. A missing field must never cost
+    # a board — that is the entire lesson of this incident.
+    import chain_formatter as f
+    d = f.build_board({"event": {"title": "T", "slots_per_hour": 2}, "chain": None,
+                       "gap_horizon_hours": 6, "hours": [],
+                       "projection": {"measured": True, "earliest": TOP + 40 * HOUR,
+                                      "latest": TOP + 60 * HOUR}},
+                      now_ms=NOW)[0].description
+    assert "100k around" in d
+    assert "hits/h" not in d

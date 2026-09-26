@@ -59,7 +59,12 @@ def mock_watch(now_ts: int) -> Dict:
             "measured": True,
             "earliest": (top + 44 * HOUR) * 1000,
             "latest": (top + 68 * HOUR) * 1000,
+            # ⚠️ Both spellings, because the ENDPOINT sends both — it served
+            # only camelCase once, this mock had only snake_case, and the board
+            # raised KeyError in production while every test passed. A mock
+            # that disagrees with the endpoint tests nothing.
             "hits_per_hour": 242.5,
+            "hitsPerHour": 242.5,
         },
         "hours": [
             hour(0, [w(3538517, "THARAGINCAJIN"), w(3228747, "-Jesse-")]),

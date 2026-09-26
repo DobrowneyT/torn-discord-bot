@@ -125,17 +125,30 @@ class ChainWatcher:
                 await self.sender.delete(post["channel_id"], post["message_id"])
             return
 
-        await self._draw_board(tenant, payload, now_ms, stale=stale)
+        # ⚠️ **The board is drawn in its own guard, and a failure here must not
+        # reach the pings.** It did once, live: a KeyError while formatting the
+        # projection raised out of _draw_board, so the whole tick aborted before
+        # a single ping was sent — and the symptom was somebody not being told
+        # their shift had started. A stale board is cosmetic; a missed shift
+        # ping is a slot nobody covers.
+        try:
+            await self._draw_board(tenant, payload, now_ms, stale=stale)
+        except Exception:                                  # noqa: BLE001
+            log.exception("board draw failed for %s — pings continue", tenant.slug)
 
         # ⚠️ Only ever ping from a FRESH payload. Acting on a stale one would
         # mention somebody about a slot they may have dropped minutes ago, and
         # the correction never arrives because the poll is still failing.
         if not stale:
-            await self._shift_pings(tenant, payload, now_ms)
-            await self._gap_pings(tenant, payload, now_ms)
-            # ⚠️ After sending, so a gap announced and filled inside one tick
-            # is revised rather than left claiming slots that are taken.
-            await self._tidy_posts(tenant, payload, now_ms)
+            # ⚠️ Each of these is guarded too, and in priority order. A shift
+            # ping is the one somebody is waiting on; a gap ping and a tidy-up
+            # are not worth letting a bug in one suppress the other two.
+            for step in (self._shift_pings, self._gap_pings, self._tidy_posts):
+                try:
+                    await step(tenant, payload, now_ms)
+                except Exception:                          # noqa: BLE001
+                    log.exception("%s failed for %s — continuing",
+                                  step.__name__, tenant.slug)
 
     async def _draw_board(self, tenant, payload: Dict, now_ms: int, *, stale: bool) -> None:
         slug = tenant.slug
