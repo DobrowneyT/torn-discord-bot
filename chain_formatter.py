@@ -17,6 +17,7 @@ out loud. Discord's <t:…:t> renders in each reader's own zone automatically, s
 both appear side by side with no timezone maths anywhere.
 """
 
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 import discord
@@ -248,6 +249,13 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     if stale:
         footer = "⚠️ Dashboard unreachable — this board is the last good reading · " + footer
     embed.set_footer(text=footer)
+    # ⚠️ The embed's own timestamp field, not text in the footer. Discord
+    # renders it in each READER'S timezone and, crucially, keeps showing the
+    # real age — so a board the bot has stopped editing visibly drifts instead
+    # of looking current forever. Footer text cannot do this: it carries no
+    # markdown and no <t:…> formatting, so a stamp written there would be the
+    # server's clock, wrong for everybody else.
+    embed.timestamp = datetime.fromtimestamp(now_ms / 1000, tz=timezone.utc)
     return [embed]
 
 

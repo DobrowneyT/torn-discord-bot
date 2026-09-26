@@ -59,7 +59,10 @@ auto-linked, and there is no error to explain why.
 
 What it does each cycle, per faction:
 
-- **draws the board**, editing one standing message in place. ⚠️ A failed poll
+- **draws the board**, editing one standing message in place, stamped with when
+  it was last updated — ⚠️ via the embed's timestamp field, so it renders in each
+  reader's own zone and keeps showing the real age. A board the bot has stopped
+  editing visibly drifts instead of looking current. ⚠️ A failed poll
   leaves the last good board up with a staleness note rather than blanking it —
   an empty board reads as "nobody is signed up", which is the one message that
   must never be wrong.
@@ -71,10 +74,15 @@ What it does each cycle, per faction:
   they may not make it. Five minutes' notice is useless to somebody over the
   Atlantic; the point is that it arrives while they or a leader can still act.
 - **announces unfilled slots** inside the horizon the dashboard serves, as
-  ⚠️ **one message per tick, not one per hour** — the first live run posted four
-  in a row because every hour inside the horizon entered it at once. Each hour
-  is named ⚠️ **twice at most**: once on entering the horizon, once as a last
-  call two hours out, then silence.
+  ⚠️ **ONE standing message**, reconciled every tick. Posting per batch meant
+  roughly one message an hour — about 288 over a twelve-day chain, each still
+  true and none removable while any hour in it was future.
+
+  ⚠️ It is **re-posted**, not merely edited, when there is something new to say
+  — a new gap, or one crossing into last-call. An edit notifies nobody and does
+  not move the message, so a gap appearing overnight would sit silently in the
+  backlog. Slots filling and hours passing are silent edits; good news does not
+  need to buzz anybody. It disappears when everything is covered.
 
   ⚠️ Each line names TCT, and the second time is the reader's own. That second
   one is deliberately unexplained — with "TCT" on the line the pairing reads for
