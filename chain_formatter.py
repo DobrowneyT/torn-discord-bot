@@ -212,8 +212,14 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     if proj.get("measured"):
         # ⚠️ A band, not a point. An eleven-day projection stated to the hour is
         # false precision somebody will plan around.
-        lines.append(f"**100k around** {_ts(proj['earliest'], 'f')} – {_ts(proj['latest'], 'f')} "
-                     f"· {proj['hits_per_hour']:.0f} hits/h")
+        # ⚠️ `.get`, not `[...]`, and both spellings. The dashboard served the
+        # rate as `hitsPerHour` while this read `hits_per_hour`, and the
+        # KeyError took the whole tick down with it — including the pings.
+        # ⚠️ The rate is also OPTIONAL in the rendering: a band with no rate is
+        # still worth showing, and a missing field must never cost a board.
+        rate = proj.get('hits_per_hour', proj.get('hitsPerHour'))
+        band = f"**100k around** {_ts(proj['earliest'], 'f')} – {_ts(proj['latest'], 'f')}"
+        lines.append(f"{band} · {rate:.0f} hits/h" if rate is not None else band)
     else:
         # ⚠️ Say it plainly. An absent projection is fine; a confident wrong one
         # is not.
