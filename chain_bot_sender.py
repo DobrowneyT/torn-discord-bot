@@ -57,11 +57,35 @@ class DiscordSender(chain_watcher.Sender):
     def __init__(self, client: discord.Client):
         self.client = client
 
+    async def _wake(self, channel) -> None:
+        """
+        Re-open an archived thread before writing to it.
+
+        ⚠️ **Threads auto-archive, and an archived thread refuses writes.** The
+        board is EDITED rather than re-posted, so a board living in a quiet
+        thread silently stops updating — no error a reader would see, just a
+        board frozen at whatever it last said. The OC watcher learned this the
+        hard way and carries three strategies for it; this needs only the
+        cheapest, because the bot holds Manage Threads.
+
+        ⚠️ Failures are swallowed. If we cannot re-open it the write below will
+        fail anyway, and it reports the real reason — an exception here would
+        replace a useful message with a confusing one.
+        """
+        if not isinstance(channel, discord.Thread) or not channel.archived:
+            return
+        try:
+            await channel.edit(archived=False)
+            log.info("re-opened archived thread %s", channel.id)
+        except discord.HTTPException as e:
+            log.warning("could not re-open thread %s: %s", channel.id, e)
+
     async def board(self, channel_id: int, embeds, message_id: Optional[int]):
         channel = self.client.get_channel(channel_id)
         if channel is None:
             log.warning("board channel %s not visible", channel_id)
             return None
+        await self._wake(channel)
         if message_id:
             try:
                 message = await channel.fetch_message(message_id)
@@ -95,6 +119,7 @@ class DiscordSender(chain_watcher.Sender):
         if channel is None:
             log.warning("ping channel %s not visible", channel_id)
             return None
+        await self._wake(channel)
         try:
             sent = await channel.send(content)
             return sent.id

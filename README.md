@@ -155,6 +155,21 @@ URL and a token — no extra API key and no extra share of anybody's rate limit.
 3. In the faction's Discord server: `/chain tenant add slug:<slug>
    base_url:https://<slug>.monchoon.me board_channel:#chain`
 
+⚠️ **To post in a thread, run `/chain channel` inside it.** `/chain tenant add`
+types its options as `discord.TextChannel`, so Discord rejects a thread against
+them before the command runs — `/chain channel` reads where it was typed, which
+works for a channel and a thread alike.
+
+⚠️ **Threads auto-archive, and an archived thread refuses writes.** The board is
+EDITED rather than re-posted, so a board in a quiet thread would silently freeze
+at whatever it last said. The bot re-opens the thread before writing (it holds
+Manage Threads), but a short archive time still means a stale board between
+chains.
+
+⚠️ **One board channel and one ping channel per faction.** Posting the same board
+to two places means two copies that drift the moment one edit fails, and no way
+for a reader to tell which is current.
+
 `/chain tenant list` shows every faction and flags any whose token is missing.
 Everything else — cadence, lead times, channels — is `/chain set`, per faction,
 live.
