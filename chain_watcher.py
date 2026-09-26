@@ -243,6 +243,16 @@ class ChainWatcher:
                 chain_ledger.mark_sent(
                     slug, chain_ledger.shift_key(watcher["member_id"], hour_start))
             if message_id:
+                # ⚠️ **One shift message alive at a time, recycled hourly.** The
+                # previous one is about an hour that has started or finished —
+                # it has done its job, and leaving it turns the channel into a
+                # log. Deleted only AFTER the new one lands, so a failed send
+                # never leaves the channel with neither.
+                for old in chain_posts.posts_for(slug, "shift"):
+                    if old["message_id"] == message_id:
+                        continue
+                    await self.sender.delete(old["channel_id"], old["message_id"])
+                    chain_posts.forget(slug, old["message_id"])
                 chain_posts.record(slug, kind="shift", message_id=message_id,
                                    channel_id=tenant.pings_to, hours=[hour_start])
 
@@ -284,7 +294,18 @@ class ChainWatcher:
                 "stage": "last-call" if until <= LAST_CALL_HOURS * HOUR_MS else "first",
             })
 
-        existing = next(iter(chain_posts.posts_for(slug, "gap")), None)
+        # ⚠️ **Collapse to exactly one, however many are tracked.** The previous
+        # design recorded a NEW post per batch, so an upgraded bot inherits a
+        # backlog of them — and picking one while ignoring the rest meant
+        # reconciling against a different message every tick and re-posting
+        # forever. Seen live: eight tracked posts, one re-post every five
+        # minutes, none of it converging. The newest is kept because it is the
+        # one a reader can actually see at the bottom of the channel.
+        tracked = chain_posts.posts_for(slug, "gap")
+        for stale in tracked[:-1]:
+            await self.sender.delete(stale["channel_id"], stale["message_id"])
+            chain_posts.forget(slug, stale["message_id"])
+        existing = tracked[-1] if tracked else None
 
         if not gaps:
             # ⚠️ Everything covered: the message has nothing left to ask for.
@@ -309,7 +330,14 @@ class ChainWatcher:
             return
 
         was_hours = {int(h) for h in existing.get("hours", [])}
-        was_stages = existing.get("stages", {})
+        # ⚠️ A record written before stages were tracked has no key at all.
+        # Treating that as "nothing was urgent" would make every last-call hour
+        # look new and force one needless re-post per upgrade; adopting the
+        # current stages says "already announced", which is true — the message
+        # is already up and already says so.
+        was_stages = existing.get("stages")
+        if was_stages is None:
+            was_stages = stages_now
         appeared = [h for h in hours_now if h not in was_hours]
         # ⚠️ Compared against the RECORDED stage, not recomputed from the clock.
         # Recomputing would call every last-call hour "new" on every tick and

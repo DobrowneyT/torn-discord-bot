@@ -867,3 +867,89 @@ def test_never_more_than_one_gap_message_over_a_long_run(monkeypatch, forge):
     for h in range(12):
         run(watcher, forge, TOP + h * HOUR)
         assert len(chain_posts.posts_for("forge", "gap")) <= 1, f"tick {h}"
+
+
+# ── recovering from the old one-message-per-batch design ────────────────────
+
+def test_a_backlog_of_tracked_gap_posts_collapses_to_one(monkeypatch, forge):
+    # ⚠️ Seen live: eight tracked gap posts inherited from the previous design,
+    # one re-post every five minutes, none of it converging — because the
+    # reconcile picked one and ignored the rest, reconciling against a
+    # different message each tick.
+    for mid in (901, 902, 903):
+        chain_posts.record("forge", kind="gap", message_id=mid, channel_id=101,
+                           hours=[TOP + 4 * HOUR], content="stale")
+    serve(monkeypatch, payload([hour(4, [])]))
+    s = FakeSender()
+    run(cw.ChainWatcher(s), forge, TOP)
+    assert sorted(s.deleted)[:2] == [901, 902], "the older duplicates must go"
+    kept = chain_posts.posts_for("forge", "gap")
+    assert len(kept) == 1
+    # ⚠️ The NEWEST survives — it is the one a reader can actually see at the
+    # bottom of the channel. Keeping the oldest would leave the visible message
+    # untouched while editing one that had just been deleted.
+    assert kept[0]["message_id"] == 903
+    assert kept[0]["content"] != "stale", "the survivor must be reconciled, not left stale"
+
+
+def test_a_record_with_no_stages_does_not_force_a_re_post(monkeypatch, forge):
+    # ⚠️ Records written before stages were tracked have no key at all.
+    # Treating that as "nothing was urgent" makes every last-call hour look new
+    # and forces a needless re-post on the first tick after an upgrade.
+    serve(monkeypatch, payload([hour(1, [])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP)                      # 1h out → last-call
+    posted = gap_msgs(s)[0]["id"]
+    # Strip the stages, as an older record would be.
+    import state as st
+    data = st.load_state()
+    for p in data["chain_posts"]["forge"]:
+        p.pop("stages", None)
+    st.save_state(data)
+    run(watcher, forge, TOP + 60_000)
+    assert len(gap_msgs(s)) == 1, "must not re-post just because stages were absent"
+    assert posted not in s.deleted
+
+
+# ── one shift message, recycled each hour ───────────────────────────────────
+
+def test_the_previous_hours_shift_ping_is_replaced(monkeypatch, forge):
+    # ⚠️ MonChoon's model: A and B are pinged for this hour, that message stays
+    # up for the hour, then C and D's ping replaces it.
+    serve(monkeypatch,
+          payload([hour(1, [w("1", "A"), w("2", "B")]),
+                   hour(2, [w("3", "C"), w("4", "D")])]),
+          payload([hour(1, [w("1", "A"), w("2", "B")]),
+                   hour(2, [w("3", "C"), w("4", "D")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 60_000)      # A and B
+    first = shift_msgs(s)[0]["id"]
+    run(watcher, forge, TOP + 2 * HOUR - 60_000)  # C and D
+    assert first in s.deleted, "the previous hour's ping should be recycled"
+    assert len(chain_posts.posts_for("forge", "shift")) == 1
+
+
+def test_the_new_ping_lands_before_the_old_one_is_removed(monkeypatch, forge):
+    # ⚠️ Deleted only AFTER the new one lands, so a failed send never leaves
+    # the channel with neither message.
+    serve(monkeypatch,
+          payload([hour(1, [w("1", "A")]), hour(2, [w("3", "C")])]),
+          payload([hour(1, [w("1", "A")]), hour(2, [w("3", "C")])]))
+
+    class Failing(FakeSender):
+        fail = False
+
+        async def say(self, channel_id, content):
+            if self.fail and "chain watch starts" in content:
+                raise RuntimeError("discord said no")
+            return await super().say(channel_id, content)
+
+    s = Failing()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 60_000)
+    first = shift_msgs(s)[0]["id"]
+    s.fail = True
+    run(watcher, forge, TOP + 2 * HOUR - 60_000)
+    assert first not in s.deleted, "a failed replacement must not delete the old one"
