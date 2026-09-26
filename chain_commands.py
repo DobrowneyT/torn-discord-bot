@@ -17,8 +17,11 @@ from typing import Optional, Tuple
 import discord
 from discord import app_commands
 
+import time
+
 import chain_api
 import chain_identity
+import chain_posts
 import chain_link_sync
 import chain_settings
 import chain_tenants
@@ -57,7 +60,7 @@ def _is_lead(interaction: discord.Interaction, lead_role_id: int) -> bool:
 
 
 def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] = None,
-             lead_role_id: int = 0, on_change=None) -> None:
+             lead_role_id: int = 0, on_change=None, sender=None) -> None:
     """
     Attach the /chain command group.
 
@@ -369,6 +372,66 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     @link_sync_cmd.autocomplete("faction")
     async def link_sync_faction_autocomplete(interaction: discord.Interaction, current: str):
         return _slug_choices(current)
+
+    @chain.command(name="tidy",
+                   description="Delete the bot's own old Chain Watch messages")
+    @app_commands.describe(
+        hours="Delete this bot's messages older than this many hours",
+        faction="Which faction (optional when only one is configured)")
+    async def tidy_cmd(interaction: discord.Interaction, hours: int = 24,
+                       faction: Optional[str] = None) -> None:
+        """
+        One-off clean-up for messages the bot no longer tracks.
+
+        ⚠️ **This exists because tracking started partway through.** Pings sent
+        before the clean-up feature shipped were never recorded, so nothing will
+        ever remove them — they are orphaned in the channel forever. Automatic
+        clean-up cannot reach them; only a deliberate sweep can.
+
+        ⚠️ **Operator-triggered on purpose.** A bot that decides by itself to
+        bulk-delete channel history is one nobody can trust. The cutoff is
+        yours, and it reports what it removed.
+        """
+        if not _is_lead(interaction, lead_role_id):
+            await interaction.response.send_message(
+                "That is a leadership control.", ephemeral=True)
+            return
+        slug, err = _resolve(faction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        if hours < 1:
+            # ⚠️ A floor, not a clamp to zero. `hours=0` would delete the ping
+            # sent moments ago that somebody is still reading.
+            await interaction.response.send_message(
+                "Give it at least 1 hour — anything less would delete pings "
+                "people are still reading.", ephemeral=True)
+            return
+
+        tenant = chain_tenants.get(slug)
+        await interaction.response.defer(ephemeral=True)
+        cutoff = int(time.time() * 1000) - hours * 3_600_000
+
+        # ⚠️ The board is excluded explicitly. It lives in the same channel as
+        # the pings unless the operator split them, and it is old BY DESIGN —
+        # edited in place, never re-posted. Nothing else here would spare it.
+        keep = {mid for mid in (chain_posts.board_message(slug),) if mid}
+        # And anything still tracked: the automatic clean-up owns those, and
+        # they may be about hours that have not happened yet.
+        keep |= {p["message_id"] for p in chain_posts.posts_for(slug)}
+
+        channels = {tenant.pings_to, tenant.board_channel_id}
+        removed = 0
+        for channel_id in channels:
+            removed += await sender.purge_own(
+                channel_id, before_ms=cutoff, keep_ids=keep)
+
+        await interaction.followup.send(
+            f"Removed **{removed}** of this bot's messages older than {hours}h "
+            f"in `{slug}`. The board and anything still tracked were left alone."
+            if removed else
+            f"Nothing to remove in `{slug}` older than {hours}h.",
+            ephemeral=True)
 
     @chain.command(name="refresh", description="Re-draw the board now")
     async def refresh_cmd(interaction: discord.Interaction) -> None:

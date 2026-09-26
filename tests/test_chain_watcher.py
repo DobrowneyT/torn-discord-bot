@@ -516,14 +516,77 @@ def test_a_shift_ping_is_removed_but_never_revised(monkeypatch, forge):
     assert len(s.deleted) == 1
 
 
-def test_cleanup_can_be_switched_off(monkeypatch, forge):
-    chain_settings.set_value("forge", "ping_cleanup_hours", "0")
+def test_a_long_grace_effectively_keeps_everything(monkeypatch, forge):
+    # ⚠️ The replacement for the old `ping_cleanup_hours: 0`. Minutes carries no
+    # sentinel, so "never" is expressed as the maximum — a week, which outlives
+    # any chain.
+    chain_settings.set_value("forge", "ping_cleanup_minutes", "10080")
     serve(monkeypatch, payload([hour(1, [])]))
     s = FakeSender()
     watcher = cw.ChainWatcher(s)
     run(watcher, forge, TOP)
     run(watcher, forge, TOP + 5 * HOUR)
     assert s.deleted == []
+
+
+def test_zero_minutes_removes_a_ping_the_moment_its_hour_ends(monkeypatch, forge):
+    # ⚠️ The thing the old setting could NOT express: 0 meant "never delete",
+    # so the most likely wish was the one value that did the opposite.
+    chain_settings.set_value("forge", "ping_cleanup_minutes", "0")
+    serve(monkeypatch, payload([hour(1, [w("1", "A"), w("2", "B")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 60_000)          # ping goes out
+    posted = shift_msgs(s)[0]["id"]
+    run(watcher, forge, TOP + 2 * HOUR + 60_000)      # the hour has ended
+    assert posted in s.deleted
+
+
+def test_the_default_keeps_a_ping_for_an_hour_after_the_shift(monkeypatch, forge):
+    serve(monkeypatch, payload([hour(1, [w("1", "A"), w("2", "B")])]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 60_000)
+    posted = shift_msgs(s)[0]["id"]
+    run(watcher, forge, TOP + 2 * HOUR + 30 * 60_000)   # 30 min after: still up
+    assert posted not in s.deleted
+    run(watcher, forge, TOP + 3 * HOUR + 60_000)        # past the hour: gone
+    assert posted in s.deleted
+
+
+# ── flight warnings are kept (MonChoon, 2026-09-26) ─────────────────────────
+
+FLYING_FAR = {"state": "Traveling", "description": "Traveling from Torn to South Africa",
+              "destination": "South Africa", "plane_image_type": "airliner"}
+
+
+def test_a_flight_warning_outlives_the_cleanup(monkeypatch, forge):
+    # ⚠️ It records WHY a slot went uncovered, and a lead asking "why did nobody
+    # hit at 04:00" is asking during payout review — long after the hour ended.
+    chain_settings.set_value("forge", "ping_cleanup_minutes", "0")
+    travel = {**FLYING_FAR, "departed_at": TOP - 30 * 60_000}
+    serve(monkeypatch, payload([hour(1, [w("1", "CalliBee", travel)], slots=1)]))
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 50 * 60_000)
+    warned = s.said[0]["id"]
+    run(watcher, forge, TOP + 6 * HOUR)
+    assert warned not in s.deleted
+
+
+def test_a_flight_warning_survives_the_event_ending(monkeypatch, forge):
+    # ⚠️ The sweep at event end is exactly when payout review begins.
+    travel = {**FLYING_FAR, "departed_at": TOP - 30 * 60_000}
+    live = payload([hour(1, [w("1", "CalliBee", travel)], slots=1)])
+    ended = payload([hour(1, [w("1", "CalliBee", travel)], slots=1)])
+    ended["event"]["actually_ended_at"] = NOW
+    serve(monkeypatch, live, ended)
+    s = FakeSender()
+    watcher = cw.ChainWatcher(s)
+    run(watcher, forge, TOP + HOUR - 50 * 60_000)
+    warned = s.said[0]["id"]
+    run(watcher, forge, TOP + HOUR)
+    assert warned not in s.deleted
 
 
 def test_the_message_is_not_edited_when_nothing_changed(monkeypatch, forge):

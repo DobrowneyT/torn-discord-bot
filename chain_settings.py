@@ -112,10 +112,21 @@ SETTINGS: Dict[str, Setting] = {
         # with claims that are no longer true — "03:00 needs 2 slots" about an
         # hour that was covered, or that happened yesterday — and a reader
         # cannot tell which of them still hold.
-        Setting("ping_cleanup_hours", 1, "int",
-                "Hours after an hour has finished before its ping is removed. "
-                "A gap ping is also revised as slots fill, and removed once "
-                "they all do. 0 leaves every message up forever.", lo=0, hi=168),
+        #
+        # ⚠️ MINUTES, replacing the old ping_cleanup_hours. That setting
+        # overloaded 0 to mean "never delete", so there was no way to say
+        # "delete as soon as the hour ends" — the one thing most likely to be
+        # wanted. Minutes carries no sentinel: the maximum is a week, which is
+        # effectively never for a twelve-day chain.
+        #
+        # ⚠️ Flight warnings are exempt and are never removed on this schedule.
+        # They are the record of WHY a slot went uncovered, and payout review
+        # happens after the chain ends.
+        Setting("ping_cleanup_minutes", 60, "int",
+                "Minutes after an hour has finished before its shift ping is "
+                "removed. 0 removes it the moment the hour ends. Gap pings are "
+                "also revised as slots fill and removed once they all do. "
+                "Flight warnings are kept regardless.", lo=0, hi=10080),
         Setting("quiet_when_covered", False, "bool",
                 "Skip the gap line entirely when every slot ahead is filled."),
     ]
@@ -125,6 +136,25 @@ SETTINGS: Dict[str, Setting] = {
 #: The slug used before settings were scoped per tenant, and where the old flat
 #: block is migrated to. See `_migrated`.
 LEGACY_SLUG = "default"
+
+
+def _migrate_keys(values: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Carry a tenant's settings across renames.
+
+    ⚠️ ping_cleanup_hours became ping_cleanup_minutes. Dropping the old value
+    would silently reset a deliberate choice to the default, and the symptom —
+    messages living an hour longer or shorter than somebody set — is one nobody
+    would connect to an upgrade.
+
+    ⚠️ The old `0` meant "never delete". It maps to the new maximum rather than
+    to `0`, which now means the opposite: delete the moment the hour ends.
+    """
+    out = dict(values)
+    hours = out.pop("ping_cleanup_hours", None)
+    if hours is not None and "ping_cleanup_minutes" not in out:
+        out["ping_cleanup_minutes"] = 10080 if int(hours) == 0 else int(hours) * 60
+    return {k: v for k, v in out.items() if k in SETTINGS}
 
 
 def _migrated(st: Dict[str, Any]) -> Dict[str, Any]:
@@ -144,8 +174,8 @@ def _migrated(st: Dict[str, Any]) -> Dict[str, Any]:
         return {}
     # Already per-tenant: every value is itself a dict of settings.
     if all(isinstance(v, dict) for v in block.values()):
-        return block
-    return {LEGACY_SLUG: {k: v for k, v in block.items() if k in SETTINGS}}
+        return {slug: _migrate_keys(vals) for slug, vals in block.items()}
+    return {LEGACY_SLUG: _migrate_keys(block)}
 
 
 def _store() -> Dict[str, Dict[str, Any]]:

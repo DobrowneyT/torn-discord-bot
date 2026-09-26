@@ -206,3 +206,102 @@ def test_a_forbidden_board_does_not_raise_into_the_tick():
     # take the other factions' boards down while it does.
     ch = PermChannel(0, send_error=discord.Forbidden(_Resp(403), "nope"))
     assert asyncio.run(sender({1: ch}).board(1, [], None)) is None
+
+
+# ── /chain tidy: the bot's own old messages, and nothing else ───────────────
+#
+# ⚠️ Why this exists: pings sent before the clean-up feature shipped were never
+# tracked, so nothing will ever remove them. Automatic clean-up cannot reach
+# them; only a deliberate sweep can.
+
+class Msg:
+    def __init__(self, id, author_id):
+        self.id = id
+        self.author = type("A", (), {"id": author_id})()
+        self.deleted = False
+
+    async def delete(self):
+        self.deleted = True
+
+
+class HistoryChannel:
+    def __init__(self, messages, forbidden=False):
+        self._messages = messages
+        self.forbidden = forbidden
+        self.mention = "#chain"
+
+        class _G:
+            me = object()
+        self.guild = _G()
+        self.seen_limit = None
+
+    def permissions_for(self, _m):
+        return type("P", (), {"value": 0})()
+
+    def history(self, limit=None, before=None):
+        self.seen_limit = limit
+        outer = self
+
+        class _It:
+            def __aiter__(self):
+                if outer.forbidden:
+                    raise discord.Forbidden(_Resp(403), "no history")
+                return self._gen()
+
+            async def _gen(self):
+                for m in outer._messages:
+                    yield m
+        return _It()
+
+
+BOT_ID = 7
+
+
+def purger(channel):
+    client = FakeClient({1: channel})
+    client.user = type("U", (), {"id": BOT_ID})()
+    return chain_bot_sender.DiscordSender(client)
+
+
+def test_tidy_deletes_only_the_bots_own_messages():
+    # ⚠️ Deleting anybody else's would be a different and much worse tool, and
+    # needs Manage Messages — which this bot deliberately does not hold.
+    mine, theirs = Msg(100, BOT_ID), Msg(101, 999)
+    ch = HistoryChannel([mine, theirs])
+    n = asyncio.run(purger(ch).purge_own(1, before_ms=0, keep_ids=set()))
+    assert n == 1
+    assert mine.deleted and not theirs.deleted
+
+
+def test_tidy_never_deletes_the_board():
+    # ⚠️ The board lives in the same channel unless the operator split them,
+    # and it is old BY DESIGN — edited in place, never re-posted. Nothing else
+    # would spare it.
+    board, ping = Msg(500, BOT_ID), Msg(501, BOT_ID)
+    ch = HistoryChannel([board, ping])
+    n = asyncio.run(purger(ch).purge_own(1, before_ms=0, keep_ids={500}))
+    assert n == 1
+    assert not board.deleted and ping.deleted
+
+
+def test_tidy_bounds_how_far_back_it_looks():
+    # ⚠️ So a stray command cannot walk the whole history of a busy channel.
+    ch = HistoryChannel([])
+    asyncio.run(purger(ch).purge_own(1, before_ms=0, keep_ids=set(), limit=50))
+    assert ch.seen_limit == 50
+
+
+def test_tidy_survives_having_no_history_permission(caplog):
+    ch = HistoryChannel([Msg(1, BOT_ID)], forbidden=True)
+    with caplog.at_level("ERROR"):
+        n = asyncio.run(purger(ch).purge_own(1, before_ms=0, keep_ids=set()))
+    assert n == 0
+    assert "tidy up" in caplog.text
+
+
+def test_tidy_on_an_invisible_channel_is_a_no_op():
+    client = FakeClient({})
+    client.user = type("U", (), {"id": BOT_ID})()
+    n = asyncio.run(chain_bot_sender.DiscordSender(client)
+                    .purge_own(999, before_ms=0, keep_ids=set()))
+    assert n == 0

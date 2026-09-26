@@ -121,7 +121,10 @@ class ChainWatcher:
             # leaves a channel full of "03:00 needs 2 slots" about hours that
             # will never happen, which is the last thing anybody reads before
             # muting the bot.
-            for post in chain_posts.forget_all(slug):
+            # ⚠️ Flight warnings survive the sweep, for the same reason they
+            # survive the tidy-up: payout review happens AFTER the chain ends,
+            # and this is where "they were over the Atlantic" is written down.
+            for post in chain_posts.forget_all(slug, keep_kinds=("flight",)):
                 await self.sender.delete(post["channel_id"], post["message_id"])
             return
 
@@ -202,7 +205,10 @@ class ChainWatcher:
                     chain_ledger.shift_key(watcher["member_id"], hour_start, "flight"),
                     chain_formatter.build_travel_warning(
                         {**watcher, "hour_start": hour_start}),
-                    hour_ms=hour_start)
+                    # ⚠️ Its own kind, so the tidy-up can leave it alone. It is
+                    # the record of WHY a slot went uncovered, and payout
+                    # review happens after the chain has ended.
+                    hour_ms=hour_start, kind="flight")
 
             if until > lead_ms:
                 continue
@@ -294,13 +300,13 @@ class ChainWatcher:
             chain_ledger.mark_sent(slug, key)
 
     async def _send_once(self, tenant, key: str, content: Optional[str],
-                         hour_ms: Optional[int] = None) -> None:
+                         hour_ms: Optional[int] = None, kind: str = "shift") -> None:
         if content is None or chain_ledger.already_sent(tenant.slug, key):
             return
         message_id = await self.sender.say(tenant.pings_to, content)
         chain_ledger.mark_sent(tenant.slug, key)
         if message_id and hour_ms is not None:
-            chain_posts.record(tenant.slug, kind="shift", message_id=message_id,
+            chain_posts.record(tenant.slug, kind=kind, message_id=message_id,
                                channel_id=tenant.pings_to, hours=[hour_ms])
 
     async def _tidy_posts(self, tenant, payload: Dict, now_ms: int) -> None:
@@ -316,13 +322,18 @@ class ChainWatcher:
         five minutes" has no live state to correct; it was true when sent.
         """
         slug = tenant.slug
-        grace_hours = chain_settings.get(slug, "ping_cleanup_hours")
-        if grace_hours <= 0:
-            return                       # cleanup switched off
-        grace_ms = grace_hours * HOUR_MS
+        # ⚠️ Minutes, and 0 is meaningful: remove the ping the moment its hour
+        # ends. The old hours-based setting overloaded 0 to mean "never", so
+        # the most likely wish was the one thing it could not express.
+        grace_ms = chain_settings.get(slug, "ping_cleanup_minutes") * 60_000
         by_hour = {h["hour_start"]: h for h in payload.get("hours", [])}
 
         for post in chain_posts.posts_for(slug):
+            # ⚠️ Flight warnings are kept. They record why a slot went
+            # uncovered, and a lead asking "why did nobody hit at 04:00" during
+            # payout review is asking after the chain has finished.
+            if post.get("kind") == "flight":
+                continue
             expired = all(h + HOUR_MS + grace_ms <= now_ms for h in post["hours"])
             if expired:
                 await self.sender.delete(post["channel_id"], post["message_id"])

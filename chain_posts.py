@@ -105,10 +105,23 @@ def forget(slug: str, message_id: int) -> None:
         _save(posts)
 
 
-def forget_all(slug: str) -> List[Dict]:
-    """Drop a faction's tracked pings, returning them so they can be deleted."""
+def forget_all(slug: str, keep_kinds: tuple = ()) -> List[Dict]:
+    """
+    Drop a faction's tracked pings, returning them so they can be deleted.
+
+    ⚠️ `keep_kinds` stays tracked AND stays posted. Flight warnings use it:
+    they are the record of why a slot went uncovered, and payout review happens
+    after the chain has ended, so sweeping them at event end would delete the
+    evidence exactly when somebody goes looking for it.
+    """
     posts = _posts()
-    gone = posts.pop(slug, [])
+    items = posts.get(slug, [])
+    kept = [p for p in items if p.get("kind") in keep_kinds]
+    gone = [p for p in items if p.get("kind") not in keep_kinds]
     if gone:
+        if kept:
+            posts[slug] = kept
+        else:
+            posts.pop(slug, None)
         _save(posts)
     return gone
