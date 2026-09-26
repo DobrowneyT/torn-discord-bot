@@ -163,6 +163,7 @@ class ChainWatcher:
             {**payload, "hours": hours}, now_ms=now_ms,
             hours_shown=chain_settings.get(slug, "board_hours_shown"),
             compact=chain_settings.get(slug, "board_compact"),
+            sign_up_url=tenant.sign_up_url,
             stale=stale)
         known = self._board_messages.get(slug)
         if known is None:
@@ -204,7 +205,8 @@ class ChainWatcher:
                     tenant,
                     chain_ledger.shift_key(watcher["member_id"], hour_start, "flight"),
                     chain_formatter.build_travel_warning(
-                        {**watcher, "hour_start": hour_start}),
+                        {**watcher, "hour_start": hour_start},
+                        sign_up_url=tenant.sign_up_url),
                     # ⚠️ Its own kind, so the tidy-up can leave it alone. It is
                     # the record of WHY a slot went uncovered, and payout
                     # review happens after the chain has ended.
@@ -291,7 +293,8 @@ class ChainWatcher:
                 chain_posts.forget(slug, existing["message_id"])
             return
 
-        content = chain_formatter.build_gap_ping(gaps, last_call_hours=LAST_CALL_HOURS)
+        content = chain_formatter.build_gap_ping(
+            gaps, last_call_hours=LAST_CALL_HOURS, sign_up_url=tenant.sign_up_url)
         if content is None:
             return
         hours_now = [g["hour"]["hour_start"] for g in gaps]
