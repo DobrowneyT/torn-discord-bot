@@ -305,3 +305,65 @@ def test_tidy_on_an_invisible_channel_is_a_no_op():
     n = asyncio.run(chain_bot_sender.DiscordSender(client)
                     .purge_own(999, before_ms=0, keep_ids=set()))
     assert n == 0
+
+
+# ── posting into a thread (MonChoon, 2026-09-26) ────────────────────────────
+#
+# ⚠️ Threads auto-archive, and an archived thread refuses writes. The board is
+# EDITED rather than re-posted, so a board in a quiet thread silently stops
+# updating — no error a reader would see, just a board frozen at whatever it
+# last said. The OC watcher carries three strategies for this; the cheapest is
+# enough here because the bot holds Manage Threads.
+
+class FakeThread:
+    def __init__(self, archived):
+        self.archived = archived
+        self.id = 77
+        self.woken = False
+        self.sent = []
+
+    async def edit(self, **kw):
+        if kw.get("archived") is False:
+            self.archived = False
+            self.woken = True
+
+    async def send(self, *a, **kw):
+        if self.archived:
+            raise AssertionError("wrote to an archived thread")
+        self.sent.append(kw)
+        return FakeMessage(900)
+
+    async def fetch_message(self, mid):
+        return FakeMessage(mid)
+
+
+def test_an_archived_thread_is_re_opened_before_the_board_is_drawn(monkeypatch):
+    th = FakeThread(archived=True)
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    client = FakeClient({1: th})
+    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], None))
+    assert th.woken, "a board in an archived thread would silently freeze"
+    assert th.sent
+
+
+def test_an_archived_thread_is_re_opened_before_a_ping(monkeypatch):
+    th = FakeThread(archived=True)
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    client = FakeClient({1: th})
+    client.user = type("U", (), {"id": 7})()
+    asyncio.run(chain_bot_sender.DiscordSender(client).say(1, "hi"))
+    assert th.woken
+
+
+def test_a_live_thread_is_left_alone(monkeypatch):
+    th = FakeThread(archived=False)
+    monkeypatch.setattr(discord, "Thread", FakeThread)
+    client = FakeClient({1: th})
+    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], None))
+    assert not th.woken, "no need to touch a thread that is already open"
+
+
+def test_an_ordinary_channel_is_never_treated_as_a_thread():
+    ch = FakeChannel()
+    n = asyncio.run(chain_bot_sender.DiscordSender(FakeClient({1: ch})).board(1, [], None))
+    assert n == 901

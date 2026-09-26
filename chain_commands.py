@@ -373,6 +373,73 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     async def link_sync_faction_autocomplete(interaction: discord.Interaction, current: str):
         return _slug_choices(current)
 
+    @chain.command(name="channel",
+                   description="Post here — run it in the channel or thread you want")
+    @app_commands.describe(
+        which="Which message goes here",
+        faction="Which faction (optional when only one is configured)")
+    @app_commands.choices(which=[
+        app_commands.Choice(name="the board", value="board"),
+        app_commands.Choice(name="pings", value="pings"),
+        app_commands.Choice(name="both", value="both"),
+    ])
+    async def channel_cmd(interaction: discord.Interaction,
+                          which: app_commands.Choice[str],
+                          faction: Optional[str] = None) -> None:
+        """
+        Point a faction's output at wherever this was typed.
+
+        ⚠️ **This exists because `/chain tenant add` cannot accept a thread.**
+        Its options are typed `discord.TextChannel`, and Discord rejects a
+        thread against that type before the command ever runs — so a thread
+        could only be configured by copying its id into `/chain set`, which
+        nobody discovers. Reading `interaction.channel_id` works for a channel
+        and a thread alike.
+        """
+        if not _is_lead(interaction, lead_role_id):
+            await interaction.response.send_message(
+                "That is a leadership control.", ephemeral=True)
+            return
+        slug, err = _resolve(faction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        here = interaction.channel_id
+        if not here:
+            await interaction.response.send_message(
+                "Could not tell which channel this is.", ephemeral=True)
+            return
+
+        keys = {"board": ["board_channel_id"], "pings": ["ping_channel_id"],
+                "both": ["board_channel_id", "ping_channel_id"]}[which.value]
+        for key in keys:
+            chain_settings.set_value(slug, key, str(here))
+        # ⚠️ The tenant record holds the channels too, and the settings are what
+        # the poller reads — writing only one of them leaves the two disagreeing
+        # about where the board lives, which shows up as a board in the old
+        # place that never updates.
+        tenant = chain_tenants.get(slug)
+        if tenant is not None:
+            chain_tenants.add(
+                tenant.slug, tenant.base_url, tenant.guild_id,
+                here if "board_channel_id" in keys else tenant.board_channel_id,
+                here if "ping_channel_id" in keys else tenant.ping_channel_id)
+
+        note = ""
+        if isinstance(interaction.channel, discord.Thread):
+            # ⚠️ Threads auto-archive. The board is EDITED rather than re-posted,
+            # and an archived thread refuses writes — so a board left in a quiet
+            # thread silently stops updating. The bot un-archives before writing
+            # (it holds Manage Threads), but say so rather than let it surprise.
+            note = ("\n⚠️ This is a thread, so it will auto-archive when quiet. "
+                    "The bot re-opens it before posting, but a thread with a short "
+                    "archive time is a board that goes stale between chains.")
+        await interaction.response.send_message(
+            f"`{slug}` will post **{which.name}** here.{note}", ephemeral=True)
+        if on_change:
+            await on_change()
+
     @chain.command(name="tidy",
                    description="Delete the bot's own old Chain Watch messages")
     @app_commands.describe(
