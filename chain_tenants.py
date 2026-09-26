@@ -78,6 +78,15 @@ class Tenant:
     def url(self) -> str:
         return f"{self.base_url}/api/internal/chain-watch"
 
+    @property
+    def sign_up_url(self) -> str:
+        """The page a member actually claims a slot on.
+
+        ⚠️ Per tenant, from `base_url`. Every faction has its own host, so a
+        single hardcoded link would send four factions to a fifth's sheet —
+        where they would see somebody else's roster and not their own slots."""
+        return f"{self.base_url}/members/chain-watch"
+
     def to_dict(self) -> Dict[str, Any]:
         return {
             "slug": self.slug,

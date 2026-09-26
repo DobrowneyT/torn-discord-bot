@@ -182,7 +182,8 @@ def _hour_lines(hours: List[Dict], slots_per_hour: int, *,
 
 
 def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
-                stale: bool = False, compact: bool = False) -> List[discord.Embed]:
+                stale: bool = False, compact: bool = False,
+                sign_up_url: Optional[str] = None) -> List[discord.Embed]:
     """The standing board: what is covered, what is not, and where the chain is going."""
     event = watch.get("event", {})
     slots_per_hour = int(event.get("slots_per_hour", 2))
@@ -240,12 +241,21 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
         title=f"{EMBED_TITLE} — {event.get('title', 'Chain')}",
         description="\n".join(lines)[:4000],
         color=color,
+        # ⚠️ Makes the TITLE the link. Deliberately not a line appended to the
+        # description: that is truncated at 4000 characters, and on a
+        # twelve-day board the sign-up link would be the first thing cut.
+        url=sign_up_url or None,
     )
     # ⚠️ A failed poll leaves the LAST GOOD board up, marked. Blanking it would
     # read as "nobody is signed up", which is the one message that must never be
     # wrong — and an unmarked stale board is worse still, because it reads as
     # current.
-    footer = "Times shown in TCT and your own timezone · sign up on the dashboard"
+    # ⚠️ An embed FOOTER renders no markdown, so "sign up" cannot be a link
+    # here — a `[text](url)` written into it shows up as literal brackets. The
+    # title carries the link instead (embed.url), and the footer says so.
+    footer = ("Times shown in TCT and your own timezone · tap the title to sign up"
+              if sign_up_url else
+              "Times shown in TCT and your own timezone · sign up on the dashboard")
     if stale:
         footer = "⚠️ Dashboard unreachable — this board is the last good reading · " + footer
     embed.set_footer(text=footer)
@@ -259,7 +269,8 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     return [embed]
 
 
-def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[str]:
+def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2,
+                   sign_up_url: Optional[str] = None) -> Optional[str]:
     """
     ONE message about every hour that needs cover this tick.
 
@@ -298,11 +309,14 @@ def build_gap_ping(gaps: List[Dict], *, last_call_hours: int = 2) -> Optional[st
     # clock — and saying so was noise on every message. It could not be
     # labelled properly anyway: Discord renders it in the reader's own zone,
     # client-side, so the bot never learns which zone that is.
-    return (f"**{len(gaps)} {subject} cover** · sign up on the dashboard\n"
+    # ⚠️ A plain message, so markdown works here — unlike the board's footer.
+    call = (f"[sign up on the dashboard]({sign_up_url})" if sign_up_url
+            else "sign up on the dashboard")
+    return (f"**{len(gaps)} {subject} cover** · {call}\n"
             + "\n".join(lines))
 
 
-def build_travel_warning(shift: Dict) -> str:
+def build_travel_warning(shift: Dict, *, sign_up_url: Optional[str] = None) -> str:
     """
     One person, one problem: they are away and may not make their shift.
 
@@ -315,7 +329,9 @@ def build_travel_warning(shift: Dict) -> str:
     travel = shift.get("travel") or {}
     return (f"{who} your chain watch starts at {_ts(shift['hour_start'])} and you are "
             f"**away** — {_travel_phrase(travel)}. "
-            f"If that is too late, drop the slot on the dashboard so somebody can cover it.")
+            f"If that is too late, "
+            + (f"[drop the slot]({sign_up_url})" if sign_up_url else "drop the slot on the dashboard")
+            + " so somebody can cover it.")
 
 
 def build_shift_ping(due: List[Dict], *, on_hour: Optional[List[Dict]] = None,

@@ -99,6 +99,14 @@ the text fixes that. `/chain set board_compact on` swaps mentions for plain Torn
 names and fits an hour on one line. Nothing is lost: a mention inside an embed is
 a blue link that notifies nobody, and shift pings are unaffected.
 
+⚠️ **Every message links to that faction's own sign-up page**, derived from its
+`base_url` — a hardcoded link would send four factions to a fifth's sheet. On
+the board the link is on the TITLE (`embed.url`): an embed footer renders no
+markdown, so a link written there shows up as literal brackets, and the
+description is truncated at 4000 characters so a link appended to it would be
+the first thing cut on a long board. Pings are plain messages, where markdown
+works normally.
+
 ⚠️ **The board can also be pushed.** Set `CHAIN_NOTIFY_SOCKET` (and the matching
 `CHAIN_NOTIFY_SOCKET` on the dashboard container) and a sign-up redraws the board
 in seconds rather than on the poll interval. Nudges are coalesced —

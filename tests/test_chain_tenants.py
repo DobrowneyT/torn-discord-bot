@@ -100,3 +100,18 @@ def test_remove():
     ok, _ = ct.remove("forge")
     assert ok and ct.get("forge") is None
     assert ct.remove("forge")[0] is False
+
+
+def test_the_sign_up_url_is_per_tenant():
+    # ⚠️ Every faction has its own host. A single hardcoded link would send
+    # four factions to a fifth's sheet, where they would see somebody else's
+    # roster and none of their own slots.
+    add_forge()
+    ct.add("tnl", "https://tnl.monchoon.me", 2, 20)
+    assert ct.get("forge").sign_up_url == "https://forge.monchoon.me/members/chain-watch"
+    assert ct.get("tnl").sign_up_url == "https://tnl.monchoon.me/members/chain-watch"
+
+
+def test_the_sign_up_url_survives_a_trailing_slash():
+    add_forge(base_url="https://forge.monchoon.me/")
+    assert "//members" not in ct.get("forge").sign_up_url

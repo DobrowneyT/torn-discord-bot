@@ -247,3 +247,53 @@ def test_the_board_carries_when_it_was_last_updated():
     e = board([hour(1, [w("A"), w("B")])])
     assert e.timestamp is not None
     assert abs(e.timestamp.timestamp() * 1000 - NOW) < 1000
+
+
+# ── linking to the sign-up page (#793 follow-up) ────────────────────────────
+
+URL = "https://forge.monchoon.me/members/chain-watch"
+
+
+def test_the_board_puts_the_link_on_the_title_not_the_footer():
+    # ⚠️ An embed FOOTER renders no markdown — a `[text](url)` written there
+    # shows up as literal brackets. And the description is truncated at 4000
+    # characters, so on a twelve-day board a link appended to it would be the
+    # first thing cut. The title is immune to both.
+    e = f.build_board({"event": {"title": "T", "slots_per_hour": 2}, "chain": None,
+                       "projection": {"measured": False}, "gap_horizon_hours": 6,
+                       "hours": [hour(1, [w("A"), w("B")])]},
+                      now_ms=NOW, sign_up_url=URL)[0]
+    assert e.url == URL
+    assert "](" not in (e.footer.text or ""), "a link in the footer would render literally"
+    assert "tap the title" in e.footer.text
+
+
+def test_the_board_still_reads_sensibly_with_no_url():
+    e = board([hour(1, [w("A"), w("B")])])
+    assert e.url is None
+    assert "sign up on the dashboard" in e.footer.text
+
+
+def test_the_gap_ping_carries_a_real_markdown_link():
+    # A plain message, so markdown works here — unlike the board's footer.
+    body = f.build_gap_ping([{"hour": hour(1, []), "open_slots": 2, "stage": "first"}],
+                            sign_up_url=URL)
+    assert f"[sign up on the dashboard]({URL})" in body
+
+
+def test_the_travel_warning_links_to_dropping_the_slot():
+    # ⚠️ This one is time-critical — somebody over the Atlantic needs one tap,
+    # not a hunt through the site for the right page.
+    body = f.build_travel_warning(
+        {"name": "A", "member_id": "1", "hour_start": TOP + HOUR,
+         "travel": {"state": "Traveling", "destination": "Japan"}},
+        sign_up_url=URL)
+    assert f"[drop the slot]({URL})" in body
+
+
+def test_every_message_degrades_to_plain_words_without_a_url():
+    assert "sign up on the dashboard" in f.build_gap_ping(
+        [{"hour": hour(1, []), "open_slots": 1, "stage": "first"}])
+    assert "drop the slot on the dashboard" in f.build_travel_warning(
+        {"name": "A", "member_id": "1", "hour_start": TOP + HOUR,
+         "travel": {"state": "Traveling", "destination": "Japan"}})
