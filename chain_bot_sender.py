@@ -32,6 +32,35 @@ REQUIRED_PERMS = [
     ("Read Message History", 1 << 16),
 ]
 
+#: The same list for a THREAD.
+#:
+#: ⚠️ **A thread does not need `Send Messages`.** Discord checks
+#: `Send Messages in Threads` instead, and a role can hold one without the
+#: other — so demanding both would refuse a thread the bot can post in
+#: perfectly well. Getting this wrong in the safe-looking direction is still a
+#: bug: it blocks a working setup and sends somebody editing permissions that
+#: were never the problem.
+THREAD_PERMS = [
+    ("View Channel", 1 << 10),
+    ("Send Messages in Threads", 1 << 38),
+    ("Embed Links", 1 << 14),
+    ("Read Message History", 1 << 16),
+]
+
+
+def missing_permissions(value: int, *, thread: bool = False) -> list:
+    """
+    Which of the permissions this bot needs are absent from `value`.
+
+    ⚠️ Pure, and shared by the 403 explainer and `/chain channel`'s preflight,
+    so the command refuses for exactly the reasons the poller would later fail
+    for. Two lists would drift, and the drift shows up as a command that
+    accepts a channel the bot cannot write to — which is the whole failure this
+    exists to stop.
+    """
+    needed = THREAD_PERMS if thread else REQUIRED_PERMS
+    return [name for name, bit in needed if not value & bit]
+
 
 def _explain_forbidden(channel, what: str) -> str:
     """Name the actual missing permissions rather than re-printing a traceback."""
@@ -42,7 +71,7 @@ def _explain_forbidden(channel, what: str) -> str:
     except Exception:                                      # noqa: BLE001
         return (f"Cannot {what} in {name} — 403 from Discord. Check the channel's "
                 f"permission overrides for this bot.")
-    missing = [p for p, bit in REQUIRED_PERMS if not value & bit]
+    missing = missing_permissions(value, thread=isinstance(channel, discord.Thread))
     if not missing:
         return (f"Cannot {what} in {name} despite holding every required "
                 f"permission — check whether the channel is in a category that "
@@ -56,6 +85,51 @@ class DiscordSender(chain_watcher.Sender):
 
     def __init__(self, client: discord.Client):
         self.client = client
+
+    async def _channel(self, channel_id: int, what: str):
+        """
+        The channel, from cache or fetched. None when it is genuinely unreachable.
+
+        ⚠️ **`get_channel` reads the CACHE ONLY, and threads are routinely not
+        in it.** Discord hands over a guild's active threads at connect time,
+        but only the ones the bot could already see — a thread it is pointed at
+        afterwards, or one that archived and came back, is simply absent. The
+        old code read that miss as "not visible" and gave up.
+
+        That is exactly what happened on 2026-09-27: `/chain channel` was run
+        in two threads, answered "will post both here" both times, and the
+        board never appeared in either. The journal held one line per tick —
+        `board channel … not visible` — and nothing reached Discord at all.
+
+        ⚠️ The fetch is also what tells the two causes apart. A cache miss is
+        silent; a fetch comes back `Forbidden` (50001) when the bot cannot see
+        the channel and `NotFound` when it is gone, so the log can say which
+        one it is instead of guessing.
+
+        ⚠️ Deliberately not cached on our side. A `Thread` object goes stale —
+        `archived` in particular — and a stale one is what would skip the wake
+        and leave the board frozen. One fetch per tick for a channel that is
+        not in the cache is a price worth paying.
+        """
+        channel = self.client.get_channel(channel_id)
+        if channel is not None:
+            return channel
+        try:
+            return await self.client.fetch_channel(channel_id)
+        except discord.Forbidden:
+            log.error(
+                "Cannot %s in channel %s: the bot cannot see it at all (Missing "
+                "Access). Give its role View Channel there — for a thread, on the "
+                "parent channel — or move the board with /chain channel.",
+                what, channel_id)
+        except discord.NotFound:
+            log.error(
+                "Cannot %s in channel %s: no such channel. It was probably "
+                "deleted — re-point it with /chain channel.", what, channel_id)
+        except discord.HTTPException as e:
+            # Transient. The next tick tries again.
+            log.warning("could not reach channel %s: %s", channel_id, e)
+        return None
 
     async def _wake(self, channel) -> None:
         """
@@ -95,9 +169,8 @@ class DiscordSender(chain_watcher.Sender):
             log.warning("could not re-open thread %s: %s", channel.id, e)
 
     async def board(self, channel_id: int, embeds, message_id: Optional[int]):
-        channel = self.client.get_channel(channel_id)
+        channel = await self._channel(channel_id, "draw the board")
         if channel is None:
-            log.warning("board channel %s not visible", channel_id)
             return None
         if message_id:
             # ⚠️ Here and nowhere else: this is the only write that is an edit.
@@ -130,9 +203,8 @@ class DiscordSender(chain_watcher.Sender):
         return sent.id
 
     async def say(self, channel_id: int, content: str) -> Optional[int]:
-        channel = self.client.get_channel(channel_id)
+        channel = await self._channel(channel_id, "send a ping")
         if channel is None:
-            log.warning("ping channel %s not visible", channel_id)
             return None
         # ⚠️ No wake needed: posting IS what un-archives a thread. Pings are
         # always new messages, so they keep their own channel awake.
@@ -155,7 +227,7 @@ class DiscordSender(chain_watcher.Sender):
         as people sign up costs the channel nothing — which is what makes this
         preferable to posting a correction.
         """
-        channel = self.client.get_channel(channel_id)
+        channel = await self._channel(channel_id, "edit a ping")
         if channel is None:
             return False
         try:
@@ -172,7 +244,7 @@ class DiscordSender(chain_watcher.Sender):
             return True
 
     async def delete(self, channel_id: int, message_id: int) -> None:
-        channel = self.client.get_channel(channel_id)
+        channel = await self._channel(channel_id, "delete a message")
         if channel is None:
             return
         try:
@@ -204,7 +276,7 @@ class DiscordSender(chain_watcher.Sender):
         ⚠️ **Bounded scan.** `limit` caps how far back it looks, so a stray
         command cannot walk the entire history of a busy channel.
         """
-        channel = self.client.get_channel(channel_id)
+        channel = await self._channel(channel_id, "tidy up")
         if channel is None:
             return 0
         me = self.client.user

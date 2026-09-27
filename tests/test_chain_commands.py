@@ -9,6 +9,8 @@ others. Phase 1 already hit the specific case where stacking two
 `@cmd.autocomplete` decorators on one callback binds only the first.
 """
 
+import asyncio
+
 import discord
 from discord import app_commands
 
@@ -144,3 +146,76 @@ def test_running_elsewhere_compares_numbers_not_strings():
     import chain_settings
     chain_settings.set_value("forge", "board_channel_id", "100")
     assert chain_commands.running_elsewhere("forge", "100") is None
+
+
+# ── never make somebody guess the slug (MonChoon, 2026-09-27) ───────────────
+
+
+def _leaves(tree):
+    chain = next(c for c in tree.get_commands() if c.name == "chain")
+    return {c.qualified_name: c for c in chain_commands._leaf_commands(chain)}
+
+
+def _param(cmd, name):
+    return next((p for p in cmd.parameters if p.name == name), None)
+
+
+def test_every_faction_parameter_offers_the_configured_factions():
+    # ⚠️ The guard, not a spot-check. /chain channel, /chain stop and /chain
+    # tidy each shipped without autocomplete, and /chain channel is the one
+    # command a leader runs in a brand-new thread — so it was the one that made
+    # them type a slug from memory. A guess that misses is silently a DIFFERENT
+    # faction's board being moved.
+    leaves = _leaves(build())
+    for name, cmd in leaves.items():
+        for pname in ("faction", "slug"):
+            param = _param(cmd, pname)
+            if param is None or name == "chain tenant add":
+                continue
+            assert param.autocomplete, f"{name} {pname} makes you guess the slug"
+    # And the three that were missing are actually present to be checked.
+    for name in ("chain channel", "chain stop", "chain tidy"):
+        assert _param(leaves[name], "faction") is not None
+
+
+def test_tenant_add_does_not_complete_the_slug_of_an_existing_faction():
+    # ⚠️ Its slug names a faction that does not exist YET. Completing it from
+    # the ones that do turns a new-tenant command into a way to overwrite a
+    # live one by pressing tab.
+    assert _param(_leaves(build())["chain tenant add"], "slug").autocomplete is False
+
+
+def test_the_autocomplete_lists_what_is_configured_right_now():
+    chain_tenants.add("forge", "https://forge.monchoon.me", 1, 10)
+    chain_tenants.add("tnl", "https://tnl.monchoon.me", 2, 20)
+    cmd = _leaves(build())["chain channel"]
+    # ⚠️ `cmd.parameters[i].autocomplete` is a BOOL on the public wrapper; the
+    # callback itself lives on the internal CommandParameter. Asserting on the
+    # bool alone would pass against a callback that returns nothing.
+    callback = cmd._params["faction"].autocomplete
+    choices = asyncio.run(callback(None, ""))
+    assert {c.value for c in choices} == {"forge", "tnl"}
+    narrowed = asyncio.run(callback(None, "fo"))
+    assert [c.value for c in narrowed] == ["forge"]
+
+
+# ── refusing a channel the bot cannot write in ──────────────────────────────
+
+
+def test_a_refusal_names_the_permissions_and_where_to_set_them():
+    # ⚠️ "Missing Access" on its own sends people to the wrong screen. For a
+    # thread the permission is inherited from the PARENT channel, and there is
+    # nothing to fix on the thread itself.
+    msg = chain_commands.permission_refusal(
+        ["View Channel", "Embed Links"], thread=True, slug="forge")
+    assert "View Channel" in msg and "Embed Links" in msg
+    assert "thread" in msg and "parent channel" in msg
+    # ⚠️ And it must say nothing changed. A refusal that leaves the reader
+    # unsure whether the board just moved is worse than no refusal.
+    assert "Nothing was changed" in msg and "forge" in msg
+
+
+def test_a_refusal_for_a_plain_channel_does_not_call_it_a_thread():
+    msg = chain_commands.permission_refusal(["Send Messages"], thread=False, slug="forge")
+    assert "thread" not in msg.lower()
+
