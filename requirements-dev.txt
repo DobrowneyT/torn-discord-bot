@@ -1,0 +1,2 @@
+# Test-only dependencies. The bot itself needs nothing from here.
+pytest>=8.0
