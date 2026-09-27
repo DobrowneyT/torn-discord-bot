@@ -38,7 +38,7 @@ def test_every_command_is_attached():
     for expected in ("chain settings", "chain set", "chain reset", "chain refresh",
                      "chain tenant list", "chain tenant add", "chain tenant remove",
                      "chain link", "chain unlink", "chain link-status", "chain link-sync",
-                     "chain tidy", "chain channel"):
+                     "chain tidy", "chain channel", "chain stop", "chain help"):
         assert expected in names, f"{expected} missing — it would simply not appear in Discord"
 
 
@@ -78,3 +78,69 @@ def test_settings_warns_loudly_when_mentions_are_off():
     assert chain_settings.get("forge", "mention_members") is False
     chain_settings.set_value("forge", "mention_members", "on")
     assert chain_settings.get("forge", "mention_members") is True
+
+
+# ── /chain channel, /chain stop, /chain help ────────────────────────────────
+
+def test_channel_takes_no_channel_argument():
+    # ⚠️ The whole point: it reads where it was TYPED. A channel option would
+    # be typed discord.TextChannel and Discord would reject a thread against
+    # it before the command ever ran — which is the limitation this replaces.
+    tree = build()
+    chain = next(c for c in tree.get_commands() if c.name == "chain")
+    cmd = next(c for c in chain.commands if c.name == "channel")
+    names = {p.name for p in cmd.parameters}
+    assert "channel" not in names
+    assert names == {"which", "faction", "move"}
+
+
+def test_channel_offers_a_move_escape_hatch():
+    # ⚠️ Refusing outright would leave no way to relocate a board without
+    # stopping it first, which is worse than the accident it prevents.
+    tree = build()
+    chain = next(c for c in tree.get_commands() if c.name == "chain")
+    cmd = next(c for c in chain.commands if c.name == "channel")
+    move = next(p for p in cmd.parameters if p.name == "move")
+    assert move.required is False
+
+
+def test_stop_exists_and_names_a_faction():
+    tree = build()
+    chain = next(c for c in tree.get_commands() if c.name == "chain")
+    cmd = next(c for c in chain.commands if c.name == "stop")
+    assert {p.name for p in cmd.parameters} == {"faction"}
+
+
+def test_help_takes_no_arguments():
+    # It is the command somebody runs when they do not know what to type.
+    tree = build()
+    chain = next(c for c in tree.get_commands() if c.name == "chain")
+    cmd = next(c for c in chain.commands if c.name == "help")
+    assert cmd.parameters == []
+
+
+def test_running_elsewhere_spots_an_active_board():
+    # ⚠️ The guard behind /chain channel: moving a board silently leaves the
+    # old one frozen in a channel people still watch, with nothing to say it
+    # stopped being true.
+    import chain_settings
+    chain_settings.set_value("forge", "board_channel_id", "100")
+    assert chain_commands.running_elsewhere("forge", 999) == 100
+
+
+def test_running_elsewhere_is_quiet_about_the_channel_you_are_in():
+    import chain_settings
+    chain_settings.set_value("forge", "board_channel_id", "100")
+    assert chain_commands.running_elsewhere("forge", 100) is None
+
+
+def test_running_elsewhere_is_quiet_when_nothing_is_configured():
+    assert chain_commands.running_elsewhere("forge", 100) is None
+
+
+def test_running_elsewhere_compares_numbers_not_strings():
+    # ⚠️ Channel ids arrive as ints from Discord and as whatever the settings
+    # store round-tripped. "100" != 100 would make the guard fire forever.
+    import chain_settings
+    chain_settings.set_value("forge", "board_channel_id", "100")
+    assert chain_commands.running_elsewhere("forge", "100") is None

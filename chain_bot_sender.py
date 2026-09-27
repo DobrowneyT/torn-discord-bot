@@ -61,22 +61,36 @@ class DiscordSender(chain_watcher.Sender):
         """
         Re-open an archived thread before writing to it.
 
-        ⚠️ **Threads auto-archive, and an archived thread refuses writes.** The
-        board is EDITED rather than re-posted, so a board living in a quiet
-        thread silently stops updating — no error a reader would see, just a
-        board frozen at whatever it last said. The OC watcher learned this the
-        hard way and carries three strategies for it; this needs only the
-        cheapest, because the bot holds Manage Threads.
+        ⚠️ **Send-then-delete, NOT `thread.edit(archived=False)`.** The OC
+        watcher tried the edit first — twice, as its strategies A and B — and
+        both are commented out in `bot.py` to this day because they did not
+        reliably work; strategy C, posting a single character and deleting it,
+        is the one that ships and the one its journal records succeeding.
+        Discord un-archives a thread on a new MESSAGE, and an edit to an
+        existing message is not that.
 
-        ⚠️ Failures are swallowed. If we cannot re-open it the write below will
-        fail anyway, and it reports the real reason — an exception here would
-        replace a useful message with a confusing one.
+        ⚠️ It also bumps the thread in the sidebar, which an edit does not. A
+        board that is edited inside a collapsed thread is a board nobody sees
+        change — which is the same failure as not writing at all.
+
+        ⚠️ **Only before an EDIT.** A new message un-archives a thread by
+        itself, so every ping and every first board post already wakes it —
+        that is the whole difference between the two jobs this bot does. The
+        board is the one surface that is edited rather than re-posted, so it is
+        the only one that can go silent inside a sleeping thread. Nudging
+        before a send would be a wasted API call and a visible flash for
+        nothing.
+
+        ⚠️ Failures are swallowed. If we cannot re-open it the write below
+        fails anyway and reports the real reason; raising here would replace a
+        useful message with a confusing one.
         """
         if not isinstance(channel, discord.Thread) or not channel.archived:
             return
         try:
-            await channel.edit(archived=False)
-            log.info("re-opened archived thread %s", channel.id)
+            nudge = await channel.send(content="\u00b7")
+            await nudge.delete()
+            log.info("re-opened archived thread %s (send-then-delete)", channel.id)
         except discord.HTTPException as e:
             log.warning("could not re-open thread %s: %s", channel.id, e)
 
@@ -85,8 +99,9 @@ class DiscordSender(chain_watcher.Sender):
         if channel is None:
             log.warning("board channel %s not visible", channel_id)
             return None
-        await self._wake(channel)
         if message_id:
+            # ⚠️ Here and nowhere else: this is the only write that is an edit.
+            await self._wake(channel)
             try:
                 message = await channel.fetch_message(message_id)
                 await message.edit(embeds=embeds)
@@ -119,7 +134,8 @@ class DiscordSender(chain_watcher.Sender):
         if channel is None:
             log.warning("ping channel %s not visible", channel_id)
             return None
-        await self._wake(channel)
+        # ⚠️ No wake needed: posting IS what un-archives a thread. Pings are
+        # always new messages, so they keep their own channel awake.
         try:
             sent = await channel.send(content)
             return sent.id

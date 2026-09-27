@@ -29,6 +29,20 @@ import chain_tenants
 log = logging.getLogger("chain_commands")
 
 
+def running_elsewhere(slug: str, here: int) -> Optional[int]:
+    """
+    The channel this faction is already posting in, if it is not `here`.
+
+    ⚠️ Pure, so it can be tested. The guard it serves was written inside the
+    command handler first, where a mutation removing it changed nothing any
+    test could see — the whole check was invisible to the suite.
+    """
+    running = chain_settings.get(slug, "board_channel_id")
+    if running and int(running) != int(here):
+        return int(running)
+    return None
+
+
 def _resolve(slug: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """
     Which tenant a command applies to. Returns (slug, error-message).
@@ -377,7 +391,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                    description="Post here — run it in the channel or thread you want")
     @app_commands.describe(
         which="Which message goes here",
-        faction="Which faction (optional when only one is configured)")
+        faction="Which faction (optional when only one is configured)",
+        move="Move it even though it is already posting somewhere else")
     @app_commands.choices(which=[
         app_commands.Choice(name="the board", value="board"),
         app_commands.Choice(name="pings", value="pings"),
@@ -385,7 +400,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     ])
     async def channel_cmd(interaction: discord.Interaction,
                           which: app_commands.Choice[str],
-                          faction: Optional[str] = None) -> None:
+                          faction: Optional[str] = None,
+                          move: bool = False) -> None:
         """
         Point a faction's output at wherever this was typed.
 
@@ -409,6 +425,23 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         if not here:
             await interaction.response.send_message(
                 "Could not tell which channel this is.", ephemeral=True)
+            return
+
+        # ⚠️ Already running somewhere else? Say so rather than quietly moving
+        # it. A board silently relocating leaves the old one frozen in a
+        # channel people are still watching, and nothing tells them it stopped
+        # being true. `move: true` is the deliberate way through.
+        running = running_elsewhere(slug, here)
+        if running and not move:
+            guild = interaction.guild_id
+            link = f"https://discord.com/channels/{guild}/{running}"
+            await interaction.response.send_message(
+                f"⚠️ `{slug}` is **already posting** in <#{running}>.\n"
+                f"{link}\n\n"
+                f"• Move it here: `/chain channel which:{which.value} "
+                f"faction:{slug} move:True`\n"
+                f"• Stop it there first: `/chain stop faction:{slug}`",
+                ephemeral=True)
             return
 
         keys = {"board": ["board_channel_id"], "pings": ["ping_channel_id"],
@@ -439,6 +472,50 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             f"`{slug}` will post **{which.name}** here.{note}", ephemeral=True)
         if on_change:
             await on_change()
+
+    @chain.command(name="stop", description="Stop a faction posting, and clear its messages")
+    @app_commands.describe(faction="Which faction (optional when only one is configured)")
+    async def stop_cmd(interaction: discord.Interaction,
+                       faction: Optional[str] = None) -> None:
+        """
+        ⚠️ Takes the messages DOWN as well as stopping. A board left behind is
+        frozen at whatever it last said, in a channel people still read, with
+        nothing to indicate it has stopped being true — which is worse than no
+        board at all.
+
+        ⚠️ Flight warnings survive, as everywhere else: they record why a slot
+        went uncovered, and that outlives the board.
+        """
+        if not _is_lead(interaction, lead_role_id):
+            await interaction.response.send_message(
+                "That is a leadership control.", ephemeral=True)
+            return
+        slug, err = _resolve(faction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+
+        removed = 0
+        board_id = chain_posts.board_message(slug)
+        board_channel = chain_settings.get(slug, "board_channel_id")
+        if board_id and board_channel:
+            await sender.delete(board_channel, board_id)
+            chain_posts.set_board_message(slug, None)
+            removed += 1
+        for post in chain_posts.forget_all(slug, keep_kinds=("flight",)):
+            await sender.delete(post["channel_id"], post["message_id"])
+            removed += 1
+
+        for key in ("board_channel_id", "ping_channel_id"):
+            chain_settings.set_value(slug, key, "0")
+
+        await interaction.followup.send(
+            f"Stopped `{slug}` and removed **{removed}** message(s). "
+            f"Flight warnings were kept.\n"
+            f"Start it again with `/chain channel which:both faction:{slug}` "
+            f"in the channel or thread you want.",
+            ephemeral=True)
 
     @chain.command(name="tidy",
                    description="Delete the bot's own old Chain Watch messages")
@@ -499,6 +576,66 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             if removed else
             f"Nothing to remove in `{slug}` older than {hours}h.",
             ephemeral=True)
+
+    @chain.command(name="help", description="What this bot does, and how to drive it")
+    async def help_cmd(interaction: discord.Interaction) -> None:
+        """
+        ⚠️ Worth its place because none of the setup is guessable: which command
+        takes a thread, which value comes from the environment and never from a
+        command, and why the board is one message rather than many. Every line
+        below is a thing somebody has had to be told.
+        """
+        tenants = chain_tenants.all_tenants()
+        known = ", ".join(f"`{t.slug}`" for t in tenants) or "*none yet*"
+        example = tenants[0].slug if tenants else "forge"
+
+        setup = (
+            f"**Setting up a faction**\n"
+            f"1. On the dashboard box: `node db/chain-watch-token.mjs {example}`\n"
+            f"2. Put it in the bot's environment as `CHAIN_WATCH_TOKEN_"
+            f"{example.upper().replace('-', '_')}` and restart. "
+            f"⚠️ Never through a command — arguments are visible client-side "
+            f"and land in logs.\n"
+            f"3. `/chain tenant add slug:{example} base_url:https://{example}"
+            f".monchoon.me board_channel:#chain`\n"
+        )
+        running = (
+            f"**Where it posts**\n"
+            f"`/chain channel which:both faction:{example}` — run it **in** the "
+            f"channel or thread you want. ⚠️ This is the only way to use a "
+            f"thread: `/chain tenant add` cannot accept one.\n"
+            f"`/chain stop faction:{example}` — stop and take the messages down.\n"
+            f"`/chain tidy hours:24` — remove old messages the bot no longer "
+            f"tracks.\n"
+        )
+        messages = (
+            "**What it posts** — three messages, each one of a kind\n"
+            "• **the board** — edited in place, stamped with its age\n"
+            "• **needs cover** — one standing message, gone when every slot fills\n"
+            "• **shift ping** — recycled each hour\n"
+            "Flight warnings are kept deliberately: they record *why* a slot "
+            "went uncovered.\n"
+        )
+        people = (
+            f"**People**\n"
+            f"`/chain link-status` — who is matched to a Discord account\n"
+            f"`/chain link user:@them torn_id:123456` — fix one by hand\n"
+            f"⚠️ Matching is automatic; `/chain link` is the escape hatch for "
+            f"the few it cannot resolve.\n"
+        )
+        tuning = (
+            "**Tuning** — `/chain settings` lists everything, `/chain set` "
+            "changes it, live.\n"
+            "⚠️ Bonus hours, watchers per hour, payout and the gap horizon are "
+            "**dashboard** settings — the bot renders them.\n"
+        )
+        embed = discord.Embed(
+            title="Chain Watch — how it works",
+            description="\n".join([setup, running, messages, people, tuning]),
+            color=0x3498DB,
+        )
+        embed.set_footer(text=f"Factions configured: {known}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @chain.command(name="refresh", description="Re-draw the board now")
     async def refresh_cmd(interaction: discord.Interaction) -> None:
