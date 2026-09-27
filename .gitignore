@@ -4,3 +4,5 @@ state.json
 __pycache__/
 *.pyc
 scratch/dumps/
+state-backups/
+.last-deployed
