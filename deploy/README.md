@@ -59,3 +59,12 @@ itself done and goes quiet.
 journalctl -u choonbot -n 50 --no-pager
 tail -40 ~/torn/choonbot-deploy.log
 ```
+
+⚠️ **An absent `choonbot-deploy.log` is the healthy state.** `--if-changed`
+writes nothing at all when there is nothing new, and `>>` only creates the file
+once something is written — so the log appears on the first real deploy and
+grows only when something happens. An empty log does not mean cron is broken.
+
+⚠️ The readiness check reads the journal **without sudo**, which works only
+because the unit runs as `ubuntu`. Change `User=` in the unit and every deploy
+fails, forever, for a reason that looks nothing like the cause.
