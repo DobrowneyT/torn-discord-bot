@@ -52,15 +52,33 @@ class FakeChannel:
 
 
 class FakeClient:
-    def __init__(self, channels):
+    """
+    ⚠️ `get_channel` and `fetch_channel` are DIFFERENT lookups, and the fake
+    has to keep them apart or the tests cannot see the bug they exist for.
+    `get_channel` reads discord.py's cache; `fetch_channel` asks Discord. A
+    thread the bot was pointed at later is missing from the first and present
+    in the second — so `uncached` is a channel that works, and `channels` is
+    one that was already known.
+    """
+
+    def __init__(self, channels, uncached=None, fetch_error=None):
         self._channels = channels
+        self._uncached = uncached or {}
+        self._fetch_error = fetch_error
+        self.fetches = 0
 
     def get_channel(self, cid):
         return self._channels.get(cid)
 
+    async def fetch_channel(self, cid):
+        self.fetches += 1
+        if cid in self._uncached:
+            return self._uncached[cid]
+        raise self._fetch_error or discord.NotFound(_Resp(404), "unknown channel")
 
-def sender(channels):
-    return chain_bot_sender.DiscordSender(FakeClient(channels))
+
+def sender(channels, **kwargs):
+    return chain_bot_sender.DiscordSender(FakeClient(channels, **kwargs))
 
 
 def test_posts_when_there_is_no_message_yet():
@@ -426,3 +444,73 @@ def test_the_wake_nudge_is_removed_again(monkeypatch):
     nudges = [m for m in th.sent if m.get("content") == "·"]
     assert len(nudges) == 1
     assert nudges, "and it must be deleted again — see FakeMessage.deleted"
+
+
+# ── reaching a channel that is not in the cache (MonChoon, 2026-09-27) ───────
+#
+# The live failure: `/chain channel` was run in two threads, replied "will post
+# both here" both times, and the board appeared in neither. The journal had one
+# line per tick — `board channel … not visible` — because `get_channel` is a
+# CACHE read and a thread the bot is pointed at later is not in it.
+
+
+def test_a_thread_missing_from_the_cache_is_fetched_and_posted_to():
+    # ⚠️ The regression test for the whole bug. Before the fix this returned
+    # None and the board silently never existed.
+    ch = FakeChannel()
+    s = sender({}, uncached={7: ch})
+    assert asyncio.run(s.board(7, [], None)) == 901
+    assert len(ch.sent) == 1
+
+
+def test_pings_reach_an_uncached_thread_too():
+    ch = FakeChannel()
+    s = sender({}, uncached={7: ch})
+    assert asyncio.run(s.say(7, "hi")) is not None
+    assert len(ch.sent) == 1
+
+
+def test_a_cached_channel_is_never_fetched():
+    # ⚠️ The fetch is a round trip to Discord and this runs every tick, for
+    # every faction. The cache has to stay the fast path.
+    client = FakeClient({1: FakeChannel()})
+    asyncio.run(chain_bot_sender.DiscordSender(client).board(1, [], None))
+    assert client.fetches == 0
+
+
+def test_a_channel_the_bot_cannot_see_fails_quietly_and_does_not_post():
+    # 50001 Missing Access. Nothing to do but say so in the log — and above
+    # all, do not raise into a tick that still has other factions to draw.
+    s = sender({}, fetch_error=discord.Forbidden(_Resp(403), "Missing Access"))
+    assert asyncio.run(s.board(9, [], None)) is None
+    asyncio.run(s.say(9, "hi"))
+    asyncio.run(s.delete(9, 1))
+    assert asyncio.run(s.edit(9, 1, "x")) is False
+    assert asyncio.run(s.purge_own(9, before_ms=0, keep_ids=set())) == 0
+
+
+# ── which permissions each surface actually needs ───────────────────────────
+
+
+def test_a_thread_needs_send_messages_in_threads_not_send_messages():
+    # ⚠️ Discord checks a different bit inside a thread, and a role can hold
+    # one without the other. Demanding both would refuse a thread the bot can
+    # post in perfectly well — a false refusal sends somebody to edit
+    # permissions that were never the problem.
+    view, send, threads = 1 << 10, 1 << 11, 1 << 38
+    embed, history = 1 << 14, 1 << 16
+    thread_ok = view | threads | embed | history
+    assert chain_bot_sender.missing_permissions(thread_ok, thread=True) == []
+    assert chain_bot_sender.missing_permissions(thread_ok, thread=False) == ["Send Messages"]
+
+    channel_ok = view | send | embed | history
+    assert chain_bot_sender.missing_permissions(channel_ok, thread=False) == []
+    assert chain_bot_sender.missing_permissions(channel_ok, thread=True) == \
+        ["Send Messages in Threads"]
+
+
+def test_no_permissions_at_all_names_view_channel_first():
+    # The order matters: View Channel is the one that is nearly always the real
+    # cause, and it is fixed in a different place from the others.
+    assert chain_bot_sender.missing_permissions(0)[0] == "View Channel"
+    assert chain_bot_sender.missing_permissions(0, thread=True)[0] == "View Channel"

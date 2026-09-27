@@ -20,6 +20,7 @@ from discord import app_commands
 import time
 
 import chain_api
+import chain_bot_sender
 import chain_identity
 import chain_posts
 import chain_link_sync
@@ -43,6 +44,30 @@ def running_elsewhere(slug: str, here: int) -> Optional[int]:
     return None
 
 
+def permission_refusal(missing, *, thread: bool, slug: str) -> str:
+    """
+    What to say when the bot cannot write where it has just been pointed.
+
+    ⚠️ Pure, for the same reason `running_elsewhere` is: the check it serves
+    lives inside a command handler, and a handler is not something this suite
+    can reach. Written inline it would be untested, and the last untested guard
+    in this file turned out not to fire at all.
+
+    ⚠️ It names the permissions and where to set them. "Missing Access" is what
+    Discord says, and on its own it sends people to the wrong screen — for a
+    thread the permission is almost always inherited from the PARENT channel,
+    not set on the thread.
+    """
+    where = "thread" if thread else "channel"
+    names = ", ".join(f"**{m}**" for m in missing)
+    fix = ("Server Settings → Roles → this bot → allow them, or Edit Channel → "
+           "Permissions on the parent channel and add this bot's role.")
+    return (f"I cannot post in this {where}: missing {names}.\n\n"
+            f"{fix}\n\n"
+            f"Nothing was changed — `{slug}` is still posting wherever it was. "
+            f"Run this again once the permissions are in place.")
+
+
 def _resolve(slug: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     """
     Which tenant a command applies to. Returns (slug, error-message).
@@ -63,6 +88,15 @@ def _resolve(slug: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
         return None, "No factions are configured yet — add one with `/chain tenant add`."
     known = ", ".join(f"`{t.slug}`" for t in tenants)
     return None, f"Several factions are configured — say which: {known}."
+
+
+def _leaf_commands(group):
+    """Every command under `group`, descending through sub-groups."""
+    for cmd in group.commands:
+        if isinstance(cmd, app_commands.Group):
+            yield from _leaf_commands(cmd)
+        else:
+            yield cmd
 
 
 def _is_lead(interaction: discord.Interaction, lead_role_id: int) -> bool:
@@ -267,22 +301,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             if current.lower() in t.slug.lower()
         ][:25]
 
-    # ⚠️ One callback per command, as above — `@cmd.autocomplete` returns the
-    # command rather than the function, so a shared decorator binds only once.
-    @settings_cmd.autocomplete("faction")
-    async def settings_faction_autocomplete(interaction: discord.Interaction, current: str):
-        return _slug_choices(current)
-
-    @set_cmd.autocomplete("faction")
-    async def set_faction_autocomplete(interaction: discord.Interaction, current: str):
-        return _slug_choices(current)
-
-    @reset_cmd.autocomplete("faction")
-    async def reset_faction_autocomplete(interaction: discord.Interaction, current: str):
-        return _slug_choices(current)
-
-    @tenant_remove.autocomplete("slug")
-    async def tenant_remove_autocomplete(interaction: discord.Interaction, current: str):
+    async def _faction_autocomplete(interaction: discord.Interaction, current: str):
         return _slug_choices(current)
 
     # ── identity (#784) ──────────────────────────────────────────────────────
@@ -379,14 +398,6 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             f"{len(summary['ambiguous'])} ambiguous, {len(summary['unlinked'])} unmatched — "
             "`/chain link-status` lists them.", ephemeral=True)
 
-    @link_status_cmd.autocomplete("faction")
-    async def link_status_faction_autocomplete(interaction: discord.Interaction, current: str):
-        return _slug_choices(current)
-
-    @link_sync_cmd.autocomplete("faction")
-    async def link_sync_faction_autocomplete(interaction: discord.Interaction, current: str):
-        return _slug_choices(current)
-
     @chain.command(name="channel",
                    description="Post here — run it in the channel or thread you want")
     @app_commands.describe(
@@ -441,6 +452,29 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                 f"• Move it here: `/chain channel which:{which.value} "
                 f"faction:{slug} move:True`\n"
                 f"• Stop it there first: `/chain stop faction:{slug}`",
+                ephemeral=True)
+            return
+
+        # ⚠️ **Check the bot can actually write here before answering "yes".**
+        # A slash command reaches the app regardless of the bot's own
+        # permissions in the channel — only the USER needs Use Application
+        # Commands. So this command runs happily in a channel the bot cannot
+        # see, accepts it, and the board then never appears; the only trace is
+        # one log line per tick on a box nobody is tailing.
+        #
+        # That is exactly what happened on 2026-09-27: two threads, two "will
+        # post both here" replies, no board in either, and `Missing Access`
+        # (50001) on both when the ids were probed by hand.
+        #
+        # `app_permissions` is Discord's own computation for THIS bot in THIS
+        # channel, delivered with the interaction — category denies, channel
+        # overwrites and thread inheritance already applied.
+        is_thread = isinstance(interaction.channel, discord.Thread)
+        missing = chain_bot_sender.missing_permissions(
+            interaction.app_permissions.value, thread=is_thread)
+        if missing:
+            await interaction.response.send_message(
+                permission_refusal(missing, thread=is_thread, slug=slug),
                 ephemeral=True)
             return
 
@@ -607,6 +641,20 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             f"`/chain stop faction:{example}` — stop and take the messages down.\n"
             f"`/chain tidy hours:24` — remove old messages the bot no longer "
             f"tracks.\n"
+            f"⚠️ **One faction posts in one place.** Running `/chain channel` "
+            f"somewhere else MOVES it; the bot says where it is already "
+            f"running rather than quietly leaving a frozen board behind.\n"
+            f"⚠️ The bot needs **View Channel**, **Send Messages** (or **Send "
+            f"Messages in Threads**), **Embed Links** and **Read Message "
+            f"History** where it posts. For a thread those come from the "
+            f"parent channel. `/chain channel` refuses rather than accepting a "
+            f"channel it cannot write in.\n"
+        )
+        which_dashboard = (
+            f"**Which dashboard it reads**\n"
+            f"`/chain tenant list` — every faction, its URL, and whether its "
+            f"token is set. ⚠️ Worth checking: a slug is just a label here, so "
+            f"`{example}` reads whatever `base_url` says — staging included.\n"
         )
         messages = (
             "**What it posts** — three messages, each one of a kind\n"
@@ -631,7 +679,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         )
         embed = discord.Embed(
             title="Chain Watch — how it works",
-            description="\n".join([setup, running, messages, people, tuning]),
+            description="\n".join(
+                [setup, running, which_dashboard, messages, people, tuning]),
             color=0x3498DB,
         )
         embed.set_footer(text=f"Factions configured: {known}")
@@ -642,5 +691,29 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         await interaction.response.send_message("Re-drawing the board.", ephemeral=True)
         if on_change:
             await on_change()
+
+    # ── which faction, without having to remember (MonChoon, 2026-09-27) ────
+    #
+    # ⚠️ **Bound in a loop over the finished tree, not command by command.**
+    # `/chain channel`, `/chain stop` and `/chain tidy` each shipped without
+    # it, so the one command a leader runs in a brand-new thread was the one
+    # that made them guess the slug — and a guess that misses is silently a
+    # different faction's board. Binding here means a command added later is
+    # covered the day it is written rather than the day somebody notices.
+    #
+    # ⚠️ `tenant add` is the deliberate exception: its `slug` NAMES a faction
+    # that does not exist yet, so completing it from the ones that do is at
+    # best noise and at worst an invitation to overwrite a live tenant.
+    #
+    # ⚠️ Excluded BY IDENTITY, not by name. `qualified_name` here is still
+    # "tenant add" — the group is not attached to the tree until the line
+    # below, so a comparison against "chain tenant add" matches nothing and
+    # the exception silently does not apply. It did exactly that once.
+    for cmd in _leaf_commands(chain):
+        if cmd is tenant_add:
+            continue
+        for pname in ("faction", "slug"):
+            if any(p.name == pname for p in cmd.parameters):
+                cmd.autocomplete(pname)(_faction_autocomplete)
 
     tree.add_command(chain, guild=guild)
