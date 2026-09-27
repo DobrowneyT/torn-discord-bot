@@ -37,6 +37,9 @@ def running_elsewhere(slug: str, here: int) -> Optional[int]:
     ⚠️ Pure, so it can be tested. The guard it serves was written inside the
     command handler first, where a mutation removing it changed nothing any
     test could see — the whole check was invisible to the suite.
+
+    ⚠️ Same dependency as `surfaces_moving`: `chain_settings` coerces
+    `board_channel_id` to `int`, so this compares like with like.
     """
     running = chain_settings.get(slug, "board_channel_id")
     if running and int(running) != int(here):
@@ -66,6 +69,31 @@ def permission_refusal(missing, *, thread: bool, slug: str) -> str:
             f"{fix}\n\n"
             f"Nothing was changed — `{slug}` is still posting wherever it was. "
             f"Run this again once the permissions are in place.")
+
+
+def surfaces_moving(slug: str, keys, here: int) -> dict:
+    """
+    Which stored channels are about to CHANGE, and what they were.
+
+    ⚠️ Pure, like `running_elsewhere`, and for the same reason: this decides
+    whether messages get deleted, and a command handler is not somewhere this
+    suite can reach. The last guard written inline here turned out not to fire
+    at all.
+
+    ⚠️ Rests on `chain_settings` declaring these as type `"channel"`, which
+    coerces them to `int` on the way in — so a stored id and an id from Discord
+    compare equal without either side converting. `int()` here is belt-and-
+    braces, NOT the thing keeping it correct; if that setting type ever changed
+    to a plain string, this would report every surface as moving and delete a
+    board that had not gone anywhere. `test_settings_store_returns_channel_ids_as_ints`
+    is what fails if somebody changes it.
+    """
+    moving = {}
+    for key in keys:
+        old = chain_settings.get(slug, key)
+        if old and int(old) != int(here):
+            moving[key] = int(old)
+    return moving
 
 
 def _resolve(slug: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
@@ -444,6 +472,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # being true. `move: true` is the deliberate way through.
         running = running_elsewhere(slug, here)
         if running and not move:
+            # (answered inline below — no defer yet, this path does no I/O)
             guild = interaction.guild_id
             link = f"https://discord.com/channels/{guild}/{running}"
             await interaction.response.send_message(
@@ -478,8 +507,41 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                 ephemeral=True)
             return
 
+        # ⚠️ Deferred from here on: everything below can make Discord calls, and
+        # an interaction that has not been answered within three seconds is
+        # dead — the reply then fails and the operator sees "application did
+        # not respond" for a move that actually happened.
+        await interaction.response.defer(ephemeral=True)
+
         keys = {"board": ["board_channel_id"], "pings": ["ping_channel_id"],
                 "both": ["board_channel_id", "ping_channel_id"]}[which.value]
+
+        # ⚠️ **Take the old messages DOWN before re-pointing.** Moving only the
+        # setting leaves the previous board frozen at whatever it last said, in
+        # a channel people are still reading, with nothing to indicate it has
+        # stopped being true — the same reason `/chain stop` removes its
+        # messages. MonChoon hit exactly this on 2026-09-27: moved the board to
+        # the channel he wanted and the old one stayed behind.
+        #
+        # ⚠️ Deleting is not enough on its own — the stored message id has to go
+        # too, or the next tick edits a message that no longer exists, fails,
+        # and never posts a fresh board in the new channel.
+        moving = surfaces_moving(slug, keys, here)
+        removed = 0
+        if sender is not None and moving.get("board_channel_id"):
+            old_board = chain_posts.board_message(slug)
+            if old_board:
+                await sender.delete(moving["board_channel_id"], old_board)
+                chain_posts.set_board_message(slug, None)
+                removed += 1
+        if sender is not None and moving.get("ping_channel_id"):
+            # ⚠️ Flight warnings survive, as they do everywhere else: they record
+            # WHY a slot went uncovered, and that outlives which channel the
+            # board happens to live in.
+            for post in chain_posts.forget_all(slug, keep_kinds=("flight",)):
+                await sender.delete(post["channel_id"], post["message_id"])
+                removed += 1
+
         for key in keys:
             chain_settings.set_value(slug, key, str(here))
         # ⚠️ The tenant record holds the channels too, and the settings are what
@@ -494,6 +556,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                 here if "ping_channel_id" in keys else tenant.ping_channel_id)
 
         note = ""
+        if removed:
+            note += f"\nRemoved **{removed}** message(s) from the old channel."
         if isinstance(interaction.channel, discord.Thread):
             # ⚠️ Threads auto-archive. The board is EDITED rather than re-posted,
             # and an archived thread refuses writes — so a board left in a quiet
@@ -502,7 +566,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             note = ("\n⚠️ This is a thread, so it will auto-archive when quiet. "
                     "The bot re-opens it before posting, but a thread with a short "
                     "archive time is a board that goes stale between chains.")
-        await interaction.response.send_message(
+        await interaction.followup.send(
             f"`{slug}` will post **{which.name}** here.{note}", ephemeral=True)
         if on_change:
             await on_change()
