@@ -154,6 +154,11 @@ backup_state() {
 #
 # Polling rather than a single shot: a cold start takes a few seconds, and a single check would log
 # a spurious failure on every deploy.
+#
+# ⚠️ This reads the journal WITHOUT sudo, which works only because the unit runs as `ubuntu` and a
+# user can always read their own unit's messages. If the service is ever changed to run as another
+# user, this check matches nothing and EVERY deploy fails — loudly and forever, with a cause that
+# is nowhere near the symptom. Add `ubuntu` to the `systemd-journal` group, or use `sudo -n`.
 wait_ready() {
   local service="$1" since="$2" i
   echo "==> waiting for the gateway handshake in the journal"
