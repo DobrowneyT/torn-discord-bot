@@ -37,6 +37,17 @@ script:
   journal, written after the gateway handshake, and only lines newer than the
   restart count.
 
+## Why nothing the bot writes is tracked
+
+⚠️ `update.sh` refuses to deploy when a **tracked** file has local changes —
+merging over it would silently discard somebody's edit. A file the bot rewrites
+at runtime therefore blocks every deploy, forever, five minutes apart.
+
+`items_cache.json` was exactly that, and is now gitignored alongside
+`state.json` and `.env`. It is a lazy cache of Torn item names: absent, the bot
+refetches them on the next tick, so there is nothing to preserve. If you add
+another file the bot writes, gitignore it in the same commit.
+
 ## When a deploy fails
 
 The marker (`.last-deployed`) is written **only** after the bot reaches
