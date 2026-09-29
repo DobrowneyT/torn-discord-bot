@@ -13,6 +13,7 @@ Watch module, table, setting or token is touched, and War Overview is enabled by
 its own `WAR_OVERVIEW_TOKEN_*` independently of whether Chain Watch is on.
 """
 
+import io
 import logging
 import os
 from typing import List, Optional
@@ -22,6 +23,7 @@ from discord import app_commands
 
 import chain_tenants
 import war_overview_api as api
+import war_overview_chart as chart
 import war_overview_format as fmt
 
 log = logging.getLogger("war_overview_commands")
@@ -95,6 +97,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         faction="Which faction (optional when only one is configured)",
         member="Which member (required for type:member)",
         warring_only="Count only the two warring factions (default: yes)",
+        summary_only="Skip the chart and post just the numbers",
     )
     @app_commands.choices(type=[
         app_commands.Choice(name="the whole faction", value="faction"),
@@ -105,7 +108,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                           type: app_commands.Choice[str],
                           faction: Optional[str] = None,
                           member: Optional[str] = None,
-                          warring_only: bool = True) -> None:
+                          warring_only: bool = True,
+                          summary_only: bool = False) -> None:
         slug, err = resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
@@ -121,7 +125,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         await interaction.response.defer()
 
         payload = api.fetch(slug, war=war, mode=mode, member=member,
-                            warring_only="1" if warring_only else None)
+                            warring_only="1" if warring_only else None,
+                            # ⚠️ Only asked for when it will be drawn. The
+                            # series are cheap but not free, and the
+                            # summary-only path is the common one.
+                            chart=None if summary_only else "1")
         if payload is None:
             await interaction.followup.send(
                 f"Could not reach `{slug}`'s dashboard, or it rejected our token. "
@@ -136,6 +144,21 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         embed = discord.Embed(title=card["title"], description=card["description"],
                               colour=card["colour"])
         embed.set_footer(text=card["footer"])
+
+        # ⚠️ A chart that fails to draw must still leave the NUMBERS postable.
+        # `render` returns None rather than raising for exactly that reason —
+        # losing the summary because the picture failed is the worse trade.
+        png = None if summary_only else chart.render(payload.get("chart") or {},
+                                                     title=card["title"])
+        if png:
+            # ⚠️ `attachment://` binds the embed to the file in the SAME
+            # message. A bare URL would not render, and a second message would
+            # separate the picture from the numbers it belongs to.
+            name = "war-overview.png"
+            embed.set_image(url=f"attachment://{name}")
+            await interaction.followup.send(
+                embed=embed, file=discord.File(io.BytesIO(png), filename=name))
+            return
         await interaction.followup.send(embed=embed)
 
     @rw_overview.autocomplete("faction")

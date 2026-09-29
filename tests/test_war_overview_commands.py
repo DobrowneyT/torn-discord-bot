@@ -43,6 +43,13 @@ def test_every_parameter_worth_completing_has_autocomplete():
         assert params[k].autocomplete, f"{k} makes you guess"
 
 
+def test_summary_only_exists_and_defaults_to_off():
+    # ⚠️ Off by default: the chart is the reason to run this in a channel
+    # rather than reading the page. The flag is for when somebody wants the
+    # numbers without a picture.
+    assert {p.name: p for p in cmd().parameters}["summary_only"].default is False
+
+
 def test_warring_only_defaults_to_true():
     # ⚠️ The common case. A post-mortem asks about the war, and the unfiltered
     # numbers sweep in every chain-filler hit made during the window.
