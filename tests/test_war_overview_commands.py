@@ -29,11 +29,56 @@ def test_the_command_is_attached():
     assert "rw-overview" in [c.name for c in build().get_commands()]
 
 
-def test_war_and_type_are_required_and_the_rest_are_not():
+def test_faction_war_and_type_are_required_and_the_rest_are_not():
     params = {p.name: p for p in cmd().parameters}
-    assert params["war"].required and params["type"].required
-    for optional in ("faction", "member", "warring_only"):
-        assert not params[optional].required
+    # ⚠️ `faction` is required. It used to default when exactly one tenant was
+    # configured, which read as "this command belongs to that faction" — and
+    # silently picks a side the moment a second one is added.
+    for required in ("faction", "war", "type"):
+        assert params[required].required, f"{required} should be required"
+    for optional in ("member", "bins", "warring_only", "summary_only"):
+        assert not params[optional].required, f"{optional} should be optional"
+
+
+def test_the_parameters_are_ordered_so_each_picker_can_narrow_the_next():
+    # ⚠️ ORDER IS THE INTERFACE, and it is load-bearing rather than cosmetic:
+    # an autocomplete can only read arguments that come BEFORE it. `faction`
+    # first is what makes the war list that faction's wars; `war` before
+    # `member` is what makes the member list that war's participants. Reorder
+    # these and the pickers keep working but stop narrowing, which nobody
+    # notices until they are scrolling 400 names.
+    names = [p.name for p in cmd().parameters]
+    assert names.index("faction") < names.index("war") < names.index("member")
+    assert names.index("type") < names.index("member")
+    # Discord's own rule: every required option precedes every optional one.
+    required = [p.required for p in cmd().parameters]
+    assert required == sorted(required, reverse=True), names
+
+
+def test_the_bin_size_has_autocomplete_and_defaults_to_auto():
+    params = {p.name: p for p in cmd().parameters}
+    assert params["bins"].autocomplete
+    # ⚠️ `None`, not `"auto"` — the endpoint reads an absent `bin` as auto, so
+    # the default must be the value that sends nothing.
+    assert params["bins"].default in (None, discord.utils.MISSING)
+
+
+class TestValidateBins:
+    def test_nothing_means_auto_and_sends_no_argument(self):
+        assert woc.validate_bins(None) == (None, None)
+        assert woc.validate_bins("auto") == (None, None)
+
+    def test_a_width_becomes_whole_seconds_as_a_string(self):
+        # ⚠️ A string: it goes into a query string, and `5m` must reach the
+        # dashboard as `300` because that is the contract the endpoint tests pin.
+        assert woc.validate_bins("5m") == ("300", None)
+        assert woc.validate_bins("3600") == ("3600", None)
+
+    def test_a_typo_is_refused_before_the_fetch(self):
+        # ⚠️ Refused HERE, not after a round trip. On a slow dashboard that is
+        # several seconds of a deferred interaction to learn about a typo.
+        value, err = woc.validate_bins("banana")
+        assert value is None and err
 
 
 def test_every_parameter_worth_completing_has_autocomplete():
