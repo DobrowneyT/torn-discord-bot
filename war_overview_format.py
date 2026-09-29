@@ -11,6 +11,7 @@ ever be a rendering bug, never an arithmetic one.
 is testable without a gateway connection.
 """
 
+import war_overview_bins as bins
 from typing import Any, Dict, List, Optional, Tuple
 
 #: Discord truncates an embed description at 4096 and a field value at 1024.
@@ -145,8 +146,30 @@ def build_overview(payload: Dict) -> Dict[str, Any]:
         "title": header(payload),
         "description": "\n".join(lines)[:DESCRIPTION_MAX],
         "colour": 0x3498DB,
-        "footer": "Same figures as the War Overview page",
+        "footer": footer(payload),
     }
+
+
+def footer(payload: Dict) -> str:
+    """
+    `Same figures as the War Overview page · bars 1h (auto)`.
+
+    ⚠️ The bar width is named only when there ARE bars. On `summary_only` there
+    is no chart, and a footer describing bars nobody can see is noise.
+
+    ⚠️ `(auto)` is printed rather than dropped. "1h" and "1h (auto)" answer
+    different questions for somebody deciding whether to pin a width by hand to
+    compare two wars of different lengths.
+    """
+    base = "Same figures as the War Overview page"
+    if not payload.get("chart"):
+        return base
+    info = payload.get("bin") or {}
+    seconds = info.get("seconds")
+    if not seconds:
+        return base
+    suffix = f"{bins.label(int(seconds))}{' (auto)' if info.get('auto') else ''}"
+    return f"{base} · bars {suffix}"
 
 
 def member_choices(payload: Dict, current: str = "") -> List[Tuple[str, str]]:
