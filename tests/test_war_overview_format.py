@@ -111,3 +111,36 @@ def test_war_choices_label_a_live_war():
 def test_an_unnamed_opponent_is_still_labelled_honestly():
     assert fmt.war_label({}) == "vs an unnamed opponent"
     assert fmt.war_label({"opponent_id": 7}) == "vs faction 7"
+
+
+class TestFooter:
+    """⚠️ The footer is where the bar width is stated. A chart whose bars are
+    an hour wide, sitting under a footer that says nothing, cannot be compared
+    with the same war on the page — which is the whole reason `bins` exists."""
+
+    def _payload(self, **over):
+        p = {"mode": "faction", "war": {}, "summary": {}, "chart": {"panels": []},
+             "bin": {"seconds": 3600, "auto": True}}
+        p.update(over)
+        return p
+
+    def test_it_names_the_width_and_marks_the_automatic_one(self):
+        assert fmt.footer(self._payload()).endswith("bars 1h (auto)")
+
+    def test_a_width_picked_by_hand_is_not_marked_auto(self):
+        f = fmt.footer(self._payload(bin={"seconds": 300, "auto": False}))
+        assert f.endswith("bars 5m")
+        assert "auto" not in f
+
+    def test_summary_only_says_nothing_about_bars(self):
+        # ⚠️ There is no chart, so describing its bars is noise.
+        f = fmt.footer(self._payload(chart=None))
+        assert "bars" not in f
+        assert "War Overview page" in f
+
+    def test_an_older_dashboard_without_a_bin_field_still_gets_a_footer(self):
+        # ⚠️ The bot deploys on its own schedule; it will run against a
+        # dashboard that predates this field. Missing must degrade, not crash.
+        f = fmt.footer(self._payload(bin=None))
+        assert f == "Same figures as the War Overview page"
+        assert fmt.build_overview(self._payload(bin=None))["footer"] == f

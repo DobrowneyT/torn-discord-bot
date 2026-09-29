@@ -23,6 +23,7 @@ from discord import app_commands
 
 import chain_tenants
 import war_overview_api as api
+import war_overview_bins as binsize
 import war_overview_chart as chart
 import war_overview_format as fmt
 
@@ -50,7 +51,9 @@ def resolve(faction: Optional[str]):
     """
     Which tenant. Returns (slug, error-message).
 
-    ⚠️ Defaults only when exactly ONE tenant exists — the same rule `/chain`
+    ⚠️ The command itself now REQUIRES `faction`, so the `None` branch is only
+    reached from autocomplete, where the argument may not be filled in yet. It
+    still defaults only when exactly ONE tenant exists — the same rule `/chain`
     follows. With five configured, guessing means somebody reads another
     faction's war and neither of them finds out.
     """
@@ -86,16 +89,33 @@ def validate(mode: str, member: Optional[str]):
     return None
 
 
+def validate_bins(raw: Optional[str]):
+    """
+    The typed bin size → `(value-for-the-endpoint, error)`.
+
+    `None` for the value means auto, which the endpoint treats as absent.
+
+    ⚠️ Parsed here so a typo is refused BEFORE the fetch. Sending `banana`
+    onward costs a round trip to say the same thing, and on a slow dashboard
+    that is several seconds of a deferred interaction to learn you made a typo.
+    """
+    seconds, err = binsize.parse(raw)
+    if err:
+        return None, err
+    return (None if seconds is None else str(seconds)), None
+
+
 def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] = None) -> None:
     """Attach `/rw-overview` to an EXISTING tree — see the note at the top."""
 
     @tree.command(name="rw-overview",
                   description="Post a ranked war's summary — faction-wide or for one member")
     @app_commands.describe(
+        faction="Which faction's dashboard to read",
         war="Which war",
         type="Faction-wide, or one member",
-        faction="Which faction (optional when only one is configured)",
         member="Which member (required for type:member)",
+        bins="Bar width for the chart — the page's Bin size (default: auto)",
         warring_only="Count only the two warring factions (default: yes)",
         summary_only="Skip the chart and post just the numbers",
     )
@@ -103,11 +123,18 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         app_commands.Choice(name="the whole faction", value="faction"),
         app_commands.Choice(name="one member", value="member"),
     ])
+    # ⚠️ ORDER IS THE INTERFACE. Discord walks the parameters in declaration
+    # order, and each autocomplete can only see the ones already filled in — so
+    # `faction` must come first for the war list to be that faction's wars, and
+    # `war` before `member` for the member list to be that war's participants.
+    # Declared optional-looking arguments still have to follow the required
+    # ones, which is Discord's rule, not ours.
     async def rw_overview(interaction: discord.Interaction,
+                          faction: str,
                           war: str,
                           type: app_commands.Choice[str],
-                          faction: Optional[str] = None,
                           member: Optional[str] = None,
+                          bins: Optional[str] = None,
                           warring_only: bool = True,
                           summary_only: bool = False) -> None:
         slug, err = resolve(faction)
@@ -119,6 +146,10 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         if bad:
             await interaction.response.send_message(bad, ephemeral=True)
             return
+        bin_value, bad_bin = validate_bins(bins)
+        if bad_bin:
+            await interaction.response.send_message(bad_bin, ephemeral=True)
+            return
 
         # ⚠️ Deferred: this pulls a whole war's attacks, which is well past the
         # three seconds Discord allows before the interaction is dead.
@@ -126,6 +157,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
 
         payload = api.fetch(slug, war=war, mode=mode, member=member,
                             warring_only="1" if warring_only else None,
+                            # None means auto, which the endpoint reads as absent.
+                            bin=bin_value,
                             # ⚠️ Only asked for when it will be drawn. The
                             # series are cheap but not free, and the
                             # summary-only path is the common one.
@@ -136,8 +169,12 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                 f"The reason is in the bot's log.", ephemeral=True)
             return
         if payload.get("error"):
+            # ⚠️ The dashboard's wording, not ours. It refuses for more than one
+            # reason now — an unknown war, or a bin width it cannot draw — and
+            # reporting both as "does not have that war" sends somebody looking
+            # in the wrong place.
             await interaction.followup.send(
-                f"`{slug}` does not have that war: {payload['error']}.", ephemeral=True)
+                f"`{slug}`: {payload['error']}", ephemeral=True)
             return
 
         card = fmt.build_overview(payload)
@@ -164,6 +201,14 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     @rw_overview.autocomplete("faction")
     async def _faction_ac(interaction: discord.Interaction, current: str):
         return slug_choices(current)
+
+    @rw_overview.autocomplete("bins")
+    async def _bins_ac(interaction: discord.Interaction, current: str):
+        # ⚠️ No fetch: this list does not depend on the war. Every autocomplete
+        # fires per keystroke, and this one must never be a reason the picker
+        # feels slow.
+        return [app_commands.Choice(name=name, value=value)
+                for name, value in binsize.choices(current)]
 
     @rw_overview.autocomplete("war")
     async def _war_ac(interaction: discord.Interaction, current: str):
