@@ -28,6 +28,7 @@ import chain_notify
 import chain_link_sync
 import chain_settings
 import chain_tenants
+import war_overview_commands
 import chain_watcher
 
 log = logging.getLogger("chain_runtime")
@@ -89,6 +90,22 @@ class ChainRuntime:
         chain_commands.register(self.tree, lead_role_id=self.lead_role_id,
                                 on_change=self.refresh_now,
                                 sender=self.watcher.sender)
+
+        # ⚠️ **War Overview shares this TREE and nothing else.** discord.py
+        # allows exactly one CommandTree per client, so `/rw-overview` has to
+        # register on the same one as `/chain`. That is a library constraint,
+        # not a coupling: it touches no Chain Watch module, table, setting or
+        # token, and it is gated on its OWN `WAR_OVERVIEW_TOKEN_*` so turning
+        # one feature on never silently turns on the other.
+        #
+        # ⚠️ Registered here because this is where the tree lives. If Chain
+        # Watch is ever switched off independently, `/rw-overview` needs a new
+        # home — a tree of its own is NOT the answer, because a second tree on
+        # one client makes Discord route interactions to only one of them.
+        if war_overview_commands.enabled():
+            war_overview_commands.register(self.tree)
+            log.info("War Overview enabled (a WAR_OVERVIEW_TOKEN_* is set)")
+
         chain_link_sync.attach(self.client)
         if self.guild_ids:
             # ⚠️ copy_global_to then sync per guild. Registering against only one

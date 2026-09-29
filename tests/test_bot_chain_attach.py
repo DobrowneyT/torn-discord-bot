@@ -71,3 +71,44 @@ def test_an_empty_token_does_not_count(monkeypatch):
 def test_guild_ids_parse_the_same_way_from_either_host(monkeypatch):
     monkeypatch.setenv("CHAIN_GUILD_IDS", "111, ,nope,222")
     assert chain_runtime.guild_ids_from_env() == [111, 222]
+
+
+# ── /rw-overview shares the tree and nothing else (#811) ────────────────────
+
+def test_rw_overview_is_registered_when_its_own_token_is_set(monkeypatch):
+    # ⚠️ discord.py allows one CommandTree per client, so /rw-overview attaches
+    # to the same tree as /chain. Verify it actually lands there — a command
+    # that fails to register produces no error, it is simply absent.
+    import chain_runtime, asyncio
+    monkeypatch.setenv("WAR_OVERVIEW_TOKEN_FORGE", "y" * 64)
+    monkeypatch.setenv("CHAIN_GUILD_IDS", "")
+    client = discord.Client(intents=discord.Intents.default())
+    rt = chain_runtime.ChainRuntime(client, guild_ids=[])
+
+    async def no_sync(*a, **k):
+        return []
+    monkeypatch.setattr(rt.tree, "sync", no_sync)
+    asyncio.run(rt.setup())
+
+    names = [c.name for c in rt.tree.get_commands()]
+    assert "rw-overview" in names
+    assert "chain" in names          # and it did not displace Chain Watch
+
+
+def test_rw_overview_is_absent_without_its_own_token(monkeypatch):
+    # ⚠️ Gated independently: a command that can only answer "not configured"
+    # is worse than no command — somebody finds it and files a bug against a
+    # feature nobody turned on.
+    import chain_runtime, asyncio
+    for k in list(os.environ):
+        if k.startswith("WAR_OVERVIEW_TOKEN_"):
+            monkeypatch.delenv(k, raising=False)
+    client = discord.Client(intents=discord.Intents.default())
+    rt = chain_runtime.ChainRuntime(client, guild_ids=[])
+
+    async def no_sync(*a, **k):
+        return []
+    monkeypatch.setattr(rt.tree, "sync", no_sync)
+    asyncio.run(rt.setup())
+
+    assert "rw-overview" not in [c.name for c in rt.tree.get_commands()]
