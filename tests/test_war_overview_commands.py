@@ -22,11 +22,28 @@ def build():
 
 
 def cmd():
-    return next(c for c in build().get_commands() if c.name == "rw-overview")
+    """⚠️ `/rw overview` since #826 — a subcommand of the `/rw` group, not a
+    hyphenated top-level command."""
+    rw = next(c for c in build().get_commands() if c.name == "rw")
+    return next(s for s in rw.commands if s.name == "overview")
 
 
 def test_the_command_is_attached():
-    assert "rw-overview" in [c.name for c in build().get_commands()]
+    names = [c.name for c in build().get_commands()]
+    assert "rw" in names, names
+    assert "overview" in [s.name for s in
+                          next(c for c in build().get_commands() if c.name == "rw").commands]
+
+
+def test_it_is_a_group_so_discord_can_permission_it_separately():
+    # ⚠️ The point of #826. Permission overrides attach to a COMMAND ID, and
+    # subcommands have none — so `/rw` being its own top-level command is what
+    # lets it be opened to members in Integrations while `/chain` stays with
+    # leadership. A hyphenated `/rw-overview` would have worked equally well
+    # here; a `/chain overview` would not.
+    from discord import app_commands as ac
+    rw = next(c for c in build().get_commands() if c.name == "rw")
+    assert isinstance(rw, ac.Group)
 
 
 def test_faction_war_and_type_are_required_and_the_rest_are_not():
@@ -223,4 +240,4 @@ class TestReadAuthorization:
 
 
 def cmd_for():
-    return next(c for c in build().get_commands() if c.name == "rw-overview")
+    return cmd()

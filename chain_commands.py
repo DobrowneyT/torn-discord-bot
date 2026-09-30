@@ -27,6 +27,7 @@ import chain_link_sync
 import chain_settings
 import chain_tenants
 import choon_auth
+from choon_auth import refuse as _refuse, require_manage as _may_manage, require_read as _may_read
 
 log = logging.getLogger("chain_commands")
 
@@ -114,7 +115,7 @@ def _resolve(slug: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
     if len(tenants) == 1:
         return tenants[0].slug, None
     if not tenants:
-        return None, "No factions are configured yet — add one with `/chain tenant add`."
+        return None, "No factions are configured yet — add one with `/choon faction add`."
     known = ", ".join(f"`{t.slug}`" for t in tenants)
     return None, f"Several factions are configured — say which: {known}."
 
@@ -126,33 +127,6 @@ def _leaf_commands(group):
             yield from _leaf_commands(cmd)
         else:
             yield cmd
-
-
-async def _refuse(interaction: discord.Interaction, why: str) -> None:
-    await interaction.response.send_message(why, ephemeral=True)
-
-
-async def _may_manage(interaction: discord.Interaction, slug: str) -> bool:
-    """
-    Gate a write on ONE faction (#825). Replies with the reason and returns
-    False when refused.
-
-    ⚠️ Keyed on `slug` — the faction being ACTED ON — never on where the command
-    was typed. A forge councillor standing in a forge channel running
-    `/chain channel faction:tnl` is refused here.
-    """
-    ok, why = choon_auth.may_manage(interaction, slug)
-    if not ok:
-        await _refuse(interaction, why or "Not allowed.")
-    return ok
-
-
-async def _may_read(interaction: discord.Interaction, slug: str) -> bool:
-    """Gate a read on one faction — guild-scoped, no role needed."""
-    ok, why = choon_auth.may_read(interaction, slug)
-    if not ok:
-        await _refuse(interaction, why or "Not allowed.")
-    return ok
 
 
 def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] = None,
@@ -277,133 +251,6 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     @reset_cmd.autocomplete("key")
     async def reset_key_autocomplete(interaction: discord.Interaction, current: str):
         return _key_choices(current)
-
-    # ── /chain tenant ────────────────────────────────────────────────────────
-    tenant = app_commands.Group(name="tenant", description="Which factions this bot watches",
-                                parent=chain)
-
-    @tenant.command(name="list", description="Factions configured, and whether each can be polled")
-    async def tenant_list(interaction: discord.Interaction) -> None:
-        # ⚠️ Narrowed to what the caller may read (#825). The full list of
-        # configured factions, with each one's dashboard URL, is not something
-        # every member of every server should get for free.
-        visible = set(choon_auth.readable_slugs(interaction))
-        tenants = [t for t in chain_tenants.all_tenants() if t.slug in visible]
-        if not tenants:
-            await interaction.response.send_message(
-                "No factions you can see here. Add one with `/chain tenant add`.",
-                ephemeral=True)
-            return
-        lines = []
-        for t in tenants:
-            # ⚠️ Report the MISSING token here rather than only at poll time. A
-            # tenant added without one simply never draws a board, which looks
-            # like the bot being broken instead of a config that is incomplete.
-            ok = "✅" if t.token() else f"⚠️ `{t.token_env}` not set"
-            lines.append(f"**`{t.slug}`** — {t.base_url}\n"
-                         f"board <#{t.board_channel_id}> · pings <#{t.pings_to}> · {ok}")
-        await interaction.response.send_message(
-            embed=discord.Embed(title="Chain Watch factions",
-                                description="\n\n".join(lines)[:4000], color=0x3498DB),
-            ephemeral=True)
-
-    @tenant.command(name="add", description="Add or update a faction")
-    @app_commands.describe(
-        slug="The faction's dashboard slug, e.g. forge",
-        base_url="Its dashboard URL, e.g. https://forge.monchoon.me",
-        board_channel="Where the standing board lives",
-        ping_channel="Where shift pings go (defaults to the board channel)",
-    )
-    async def tenant_add(interaction: discord.Interaction, slug: str, base_url: str,
-                         board_channel: discord.TextChannel,
-                         ping_channel: Optional[discord.TextChannel] = None) -> None:
-        # ⚠️ No token parameter, deliberately. Slash command arguments are
-        # visible to the client and land in logs; a tenant bearer pasted into a
-        # channel is a leaked credential for that faction. It comes from the
-        # environment — see chain_tenants.TOKEN_ENV.
-        # ⚠️ Creating a faction is ADMIN-ONLY, and editing one takes that
-        # faction's own manager check. Nobody can hold a manager role for a
-        # faction that does not exist yet, so a "manager" gate on creation would
-        # be a gate on nothing — anyone could add a tenant pointed at any
-        # dashboard and then manage it.
-        wanted = (slug or "").strip().lower()
-        if chain_tenants.get(wanted) is None:
-            if not choon_auth.is_admin(interaction.user.id):
-                await _refuse(interaction,
-                              "Adding a new faction is a bot-admin control.")
-                return
-        elif not await _may_manage(interaction, wanted):
-            return
-        # ⚠️ The guild is taken from WHERE THE COMMAND WAS RUN, not typed. A
-        # mistyped guild id silently scopes the identity auto-match (#784) to
-        # the wrong server, which links the wrong people to the wrong shifts.
-        guild_id = interaction.guild_id or 0
-        ok, message = chain_tenants.add(
-            slug, base_url, guild_id, board_channel.id,
-            ping_channel.id if ping_channel else 0)
-        if ok and chain_settings.adopt_legacy(slug.strip().lower()):
-            message += "\nCarried over the settings from before this bot was multi-faction."
-        await interaction.response.send_message(message, ephemeral=True)
-        if ok and on_change:
-            await on_change()
-
-    @tenant.command(name="remove", description="Stop watching a faction")
-    @app_commands.describe(slug="Which faction")
-    async def tenant_remove(interaction: discord.Interaction, slug: str) -> None:
-        if not await _may_manage(interaction, (slug or "").strip().lower()):
-            return
-        ok, message = chain_tenants.remove(slug)
-        await interaction.response.send_message(message, ephemeral=True)
-        if ok and on_change:
-            await on_change()
-
-    @tenant.command(name="role",
-                    description="Which Discord roles may change a faction's settings")
-    @app_commands.describe(slug="Which faction", action="Add or remove the role",
-                           role="The role")
-    @app_commands.choices(action=[
-        app_commands.Choice(name="allow this role", value="add"),
-        app_commands.Choice(name="stop allowing this role", value="remove"),
-    ])
-    async def tenant_role(interaction: discord.Interaction, slug: str,
-                          action: app_commands.Choice[str],
-                          role: discord.Role) -> None:
-        """
-        ⚠️ **Bot-admin only, and that is the point.** Granting a role authority
-        over a faction is itself a privilege-granting act; letting a faction's
-        own managers extend the list would make the gate self-amending, so any
-        manager could hand it to anybody.
-
-        ⚠️ The bot-admin list stays in the environment and has NO command — see
-        `choon_auth.admin_ids`. An admin list editable by a command is only as
-        strong as the gate on that command, which is circular.
-        """
-        if not choon_auth.is_admin(interaction.user.id):
-            await _refuse(interaction, "Setting a faction's roles is a bot-admin control.")
-            return
-        wanted = (slug or "").strip().lower()
-        tenant_row = chain_tenants.get(wanted)
-        if tenant_row is None:
-            await _refuse(interaction, f"No faction called `{wanted}`.")
-            return
-        current = set(tenant_row.manager_role_ids)
-        if action.value == "add":
-            current.add(role.id)
-        else:
-            current.discard(role.id)
-        ok, result = chain_tenants.set_manager_roles(wanted, sorted(current))
-        if not ok:
-            await _refuse(interaction, str(result))
-            return
-        if result:
-            names = ", ".join(f"<@&{r}>" for r in result)
-            body = f"`{wanted}` can now be changed by: {names}."
-        else:
-            # ⚠️ Says what the empty case MEANS. "Roles cleared" reads as
-            # "anyone can now do this", which is the opposite of what happens.
-            body = (f"`{wanted}` has no manager roles, so only a bot admin can "
-                    f"change it.")
-        await interaction.response.send_message(body, ephemeral=True)
 
     def _slug_choices(current: str, allowed=None):
         """
@@ -551,7 +398,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         """
         Point a faction's output at wherever this was typed.
 
-        ⚠️ **This exists because `/chain tenant add` cannot accept a thread.**
+        ⚠️ **This exists because `/choon faction add` cannot accept a thread.**
         Its options are typed `discord.TextChannel`, and Discord rejects a
         thread against that type before the command ever runs — so a thread
         could only be configured by copying its id into `/chain set`, which
@@ -795,14 +642,14 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             f"{example.upper().replace('-', '_')}` and restart. "
             f"⚠️ Never through a command — arguments are visible client-side "
             f"and land in logs.\n"
-            f"3. `/chain tenant add slug:{example} base_url:https://{example}"
+            f"3. `/choon faction add slug:{example} base_url:https://{example}"
             f".monchoon.me board_channel:#chain`\n"
         )
         running = (
             f"**Where it posts**\n"
             f"`/chain channel which:both faction:{example}` — run it **in** the "
             f"channel or thread you want. ⚠️ This is the only way to use a "
-            f"thread: `/chain tenant add` cannot accept one.\n"
+            f"thread: `/choon faction add` cannot accept one.\n"
             f"`/chain stop faction:{example}` — stop and take the messages down.\n"
             f"`/chain tidy hours:24` — remove old messages the bot no longer "
             f"tracks.\n"
@@ -817,7 +664,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         )
         which_dashboard = (
             f"**Which dashboard it reads**\n"
-            f"`/chain tenant list` — every faction, its URL, and whether its "
+            f"`/choon faction list` — every faction, its URL, and whether its "
             f"token is set. ⚠️ Worth checking: a slug is just a label here, so "
             f"`{example}` reads whatever `base_url` says — staging included.\n"
         )
@@ -872,15 +719,17 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     #
     # ⚠️ Excluded BY IDENTITY, not by name. `qualified_name` here is still
     # "tenant add" — the group is not attached to the tree until the line
-    # below, so a comparison against "chain tenant add" matches nothing and
+    # below, so a comparison against "faction add" matches nothing and
     # the exception silently does not apply. It did exactly that once.
-    # ⚠️ Which picker a command gets is decided BY IDENTITY, for the same reason
-    # `tenant add` is excluded by identity: at this point `qualified_name` is
-    # still the bare leaf name, so matching on strings silently does nothing.
-    _writes = {set_cmd, reset_cmd, channel_cmd, stop_cmd, tidy_cmd, tenant_remove}
+    # ⚠️ Which picker a command gets is decided BY IDENTITY. At this point
+    # `qualified_name` is still the bare leaf name, so matching on strings
+    # silently does nothing — a mistake this file has made before.
+    #
+    # ⚠️ The `tenant add` exception that used to live here went with the tenant
+    # commands to `/choon faction` (#826). Nothing under `/chain` names a
+    # faction that does not exist yet any more, so every leaf gets a picker.
+    _writes = {set_cmd, reset_cmd, channel_cmd, stop_cmd, tidy_cmd}
     for cmd in _leaf_commands(chain):
-        if cmd is tenant_add:
-            continue
         picker = _managed_faction_autocomplete if cmd in _writes else _faction_autocomplete
         for pname in ("faction", "slug"):
             if any(p.name == pname for p in cmd.parameters):

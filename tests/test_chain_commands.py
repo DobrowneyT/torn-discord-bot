@@ -15,6 +15,7 @@ import discord
 from discord import app_commands
 
 import chain_commands
+import choon_commands
 import chain_settings
 import chain_tenants
 
@@ -22,6 +23,7 @@ import chain_tenants
 def build():
     tree = app_commands.CommandTree(discord.Client(intents=discord.Intents.default()))
     chain_commands.register(tree)
+    choon_commands.register(tree)
     return tree
 
 
@@ -39,7 +41,7 @@ def _walk(tree):
 def test_every_command_is_attached():
     names = _walk(build())
     for expected in ("chain settings", "chain set", "chain reset", "chain refresh",
-                     "chain tenant list", "chain tenant add", "chain tenant remove",
+                     "choon faction list", "choon faction add", "choon faction remove",
                      "chain link", "chain unlink", "chain link-status", "chain link-sync",
                      "chain tidy", "chain channel", "chain stop", "chain help"):
         assert expected in names, f"{expected} missing — it would simply not appear in Discord"
@@ -48,10 +50,9 @@ def test_every_command_is_attached():
 def test_tenant_add_takes_no_token_parameter():
     # ⚠️ The one parameter that must never exist. A bearer typed into a slash
     # command is visible client-side and lands in logs.
-    tree = build()
-    chain = next(c for c in tree.get_commands() if c.name == "chain")
-    tenant = next(c for c in chain.commands if c.name == "tenant")
-    add = next(c for c in tenant.commands if c.name == "add")
+    # ⚠️ `/choon faction add` since #826 — it moved out of /chain, and the rule
+    # moved with it.
+    add = _leaves(build())["choon faction add"]
     assert "token" not in {p.name for p in add.parameters}
 
 
@@ -153,8 +154,21 @@ def test_running_elsewhere_compares_numbers_not_strings():
 
 
 def _leaves(tree):
-    chain = next(c for c in tree.get_commands() if c.name == "chain")
-    return {c.qualified_name: c for c in chain_commands._leaf_commands(chain)}
+    """
+    Every runnable leaf across BOTH roots.
+
+    ⚠️ Walks `/choon` as well as `/chain` since #826. Scoped to one root, the
+    autocomplete guard below would quietly stop covering the faction commands
+    the day they moved — passing while testing nothing, which is the failure
+    that guard exists to prevent in the first place.
+    """
+    out = {}
+    for root in ("chain", "choon"):
+        group = next((c for c in tree.get_commands() if c.name == root), None)
+        if group is None:
+            continue
+        out.update({c.qualified_name: c for c in chain_commands._leaf_commands(group)})
+    return out
 
 
 def _param(cmd, name):
@@ -171,7 +185,7 @@ def test_every_faction_parameter_offers_the_configured_factions():
     for name, cmd in leaves.items():
         for pname in ("faction", "slug"):
             param = _param(cmd, pname)
-            if param is None or name == "chain tenant add":
+            if param is None or name == "choon faction add":
                 continue
             assert param.autocomplete, f"{name} {pname} makes you guess the slug"
     # And the three that were missing are actually present to be checked.
@@ -183,7 +197,7 @@ def test_tenant_add_does_not_complete_the_slug_of_an_existing_faction():
     # ⚠️ Its slug names a faction that does not exist YET. Completing it from
     # the ones that do turns a new-tenant command into a way to overwrite a
     # live one by pressing tab.
-    assert _param(_leaves(build())["chain tenant add"], "slug").autocomplete is False
+    assert _param(_leaves(build())["choon faction add"], "slug").autocomplete is False
 
 
 class _FakeRole:

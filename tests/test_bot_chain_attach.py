@@ -73,10 +73,10 @@ def test_guild_ids_parse_the_same_way_from_either_host(monkeypatch):
     assert chain_runtime.guild_ids_from_env() == [111, 222]
 
 
-# ── /rw-overview shares the tree and nothing else (#811) ────────────────────
+# ── /rw overview shares the tree and nothing else (#811) ────────────────────
 
 def test_rw_overview_is_registered_when_its_own_token_is_set(monkeypatch):
-    # ⚠️ discord.py allows one CommandTree per client, so /rw-overview attaches
+    # ⚠️ discord.py allows one CommandTree per client, so /rw attaches
     # to the same tree as /chain. Verify it actually lands there — a command
     # that fails to register produces no error, it is simply absent.
     import chain_runtime, asyncio
@@ -91,7 +91,8 @@ def test_rw_overview_is_registered_when_its_own_token_is_set(monkeypatch):
     asyncio.run(rt.setup())
 
     names = [c.name for c in rt.tree.get_commands()]
-    assert "rw-overview" in names
+    # ⚠️ `/rw overview` since #826 — a group, so the top-level name is `rw`.
+    assert "rw" in names, names
     assert "chain" in names          # and it did not displace Chain Watch
 
 
@@ -111,4 +112,4 @@ def test_rw_overview_is_absent_without_its_own_token(monkeypatch):
     monkeypatch.setattr(rt.tree, "sync", no_sync)
     asyncio.run(rt.setup())
 
-    assert "rw-overview" not in [c.name for c in rt.tree.get_commands()]
+    assert "rw" not in [c.name for c in rt.tree.get_commands()]

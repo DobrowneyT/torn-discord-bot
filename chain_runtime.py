@@ -24,6 +24,7 @@ from discord import app_commands
 
 import chain_bot_sender
 import chain_commands
+import choon_commands
 import chain_notify
 import chain_link_sync
 import chain_settings
@@ -119,7 +120,7 @@ class ChainRuntime:
         with several tenants configured there is no way to tell whose it is, and
         guessing would hand one faction's council authority over another's board
         — the exact thing #825 removes. With several, it is logged and ignored,
-        and the operator sets roles per faction with `/chain tenant role`.
+        and the operator sets roles per faction with `/choon faction role`.
 
         ⚠️ Never overwrites roles somebody chose — see
         `chain_tenants.adopt_legacy_lead_role`.
@@ -131,7 +132,7 @@ class ChainRuntime:
             log.warning(
                 "CHAIN_LEAD_ROLE_ID is set but %d tenants are configured — cannot tell "
                 "which faction it belongs to. Authority is per faction now (#825); set "
-                "each faction's roles with /chain tenant role.", len(tenants))
+                "each faction's roles with /choon faction role.", len(tenants))
             return
         chain_tenants.adopt_legacy_lead_role(tenants[0].slug, self.lead_role_id)
 
@@ -141,15 +142,19 @@ class ChainRuntime:
                                 on_change=self.refresh_now,
                                 sender=self.watcher.sender)
 
+        # ⚠️ The SAME tree — see the note below. `/choon` carries the bot-wide
+        # controls that used to sit under `/chain tenant` (#826).
+        choon_commands.register(self.tree, on_change=self.refresh_now)
+
         # ⚠️ **War Overview shares this TREE and nothing else.** discord.py
-        # allows exactly one CommandTree per client, so `/rw-overview` has to
+        # allows exactly one CommandTree per client, so `/rw overview` has to
         # register on the same one as `/chain`. That is a library constraint,
         # not a coupling: it touches no Chain Watch module, table, setting or
         # token, and it is gated on its OWN `WAR_OVERVIEW_TOKEN_*` so turning
         # one feature on never silently turns on the other.
         #
         # ⚠️ Registered here because this is where the tree lives. If Chain
-        # Watch is ever switched off independently, `/rw-overview` needs a new
+        # Watch is ever switched off independently, `/rw overview` needs a new
         # home — a tree of its own is NOT the answer, because a second tree on
         # one client makes Discord route interactions to only one of them.
         if war_overview_commands.enabled():
