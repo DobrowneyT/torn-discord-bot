@@ -193,11 +193,34 @@ def test_every_faction_parameter_offers_the_configured_factions():
         assert _param(leaves[name], "faction") is not None
 
 
-def test_tenant_add_does_not_complete_the_slug_of_an_existing_faction():
-    # ⚠️ Its slug names a faction that does not exist YET. Completing it from
-    # the ones that do turns a new-tenant command into a way to overwrite a
-    # live one by pressing tab.
-    assert _param(_leaves(build())["choon faction add"], "slug").autocomplete is False
+def test_faction_add_completes_from_the_fleet_but_not_from_what_is_served(monkeypatch):
+    # ⚠️ This used to assert NO autocomplete, because the slug named a faction
+    # that did not exist yet and completing it from the ones that did turned a
+    # new-tenant command into a way to overwrite a live one by pressing tab.
+    # A registry answers that properly: the fleet knows what exists before the
+    # bot serves it, so the picker offers exactly the ones worth adding — and
+    # the original hazard is still closed, because anything already served is
+    # excluded.
+    import choon_registry
+    monkeypatch.setattr(choon_registry, "slugs", lambda: ["forge", "tnl", "mayhem"])
+    chain_tenants.add("forge", "https://forge.monchoon.me", 1, 10)
+    # ⚠️ `.autocomplete` on the public wrapper is a BOOL; the callback lives on
+    # the internal CommandParameter — the same trap this file flags elsewhere.
+    add = _leaves(build())["choon faction add"]
+    assert _param(add, "slug").autocomplete is True, "the fleet picker should exist now"
+    cb = add._params["slug"].autocomplete
+    offered = [c.value for c in asyncio.run(cb(_FakeInteraction(uid=1), ""))]
+    assert "forge" not in offered, "already served — offering it invites a tab-overwrite"
+    assert set(offered) == {"tnl", "mayhem"}
+
+
+def test_the_fleet_picker_is_empty_rather_than_stale_when_the_registry_is_down(monkeypatch):
+    # ⚠️ Completing from a list that might be wrong is how somebody points a
+    # faction at a dashboard that has moved.
+    import choon_registry
+    monkeypatch.setattr(choon_registry, "slugs", lambda: [])
+    cb = _leaves(build())["choon faction add"]._params["slug"].autocomplete
+    assert asyncio.run(cb(_FakeInteraction(uid=1), "")) == []
 
 
 class _FakeRole:

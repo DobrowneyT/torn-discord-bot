@@ -165,22 +165,57 @@ class TestReadsAreLooser:
 
 
 class TestTenantAdministration:
-    def test_creating_a_new_faction_is_admin_only(self):
+    def test_creating_a_new_faction_is_admin_only(self, monkeypatch):
         # ⚠️ Nobody can hold a manager role for a faction that does not exist,
         # so a manager gate on creation would be a gate on nothing.
+        import choon_registry
+        monkeypatch.setattr(choon_registry, "lookup",
+                            lambda s: {"slug": s, "base_url": "https://new.x"})
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
-        ch = type("C", (), {"id": 77})()
-        sent = run(leaves()["choon faction add"], who,
-                   slug="brand-new", base_url="https://new.x", board_channel=ch)
+        sent = run(leaves()["choon faction add"], who, slug="brand-new")
         assert "bot-admin control" in body(sent)
         assert chain_tenants.get("brand-new") is None
 
-    def test_a_councillor_may_still_edit_their_own_factions_entry(self):
+    def test_a_councillor_may_still_refresh_their_own_factions_entry(self, monkeypatch):
+        import choon_registry
+        monkeypatch.setattr(choon_registry, "lookup",
+                            lambda s: {"slug": s, "base_url": "https://forge.moved"})
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
-        ch = type("C", (), {"id": 88})()
-        run(leaves()["choon faction add"], who,
-            slug="forge", base_url="https://forge.x", board_channel=ch)
-        assert chain_tenants.get("forge").board_channel_id == 88
+        run(leaves()["choon faction add"], who, slug="forge")
+        assert chain_tenants.get("forge").base_url == "https://forge.moved"
+
+    def test_refreshing_an_entry_keeps_the_channels_chain_set(self, monkeypatch):
+        # ⚠️ `add` doubles as "refresh". Resetting the board channel here would
+        # silently stop a working faction posting, as a side effect of picking
+        # up a URL change.
+        import choon_registry
+        monkeypatch.setattr(choon_registry, "lookup",
+                            lambda s: {"slug": s, "base_url": "https://forge.moved"})
+        chain_tenants.add("forge", "https://forge.x", FORGE_GUILD, 4242, 4343)
+        run(leaves()["choon faction add"],
+            FakeInteraction(uid=ADMIN, guild_id=FORGE_GUILD), slug="forge")
+        t = chain_tenants.get("forge")
+        assert (t.board_channel_id, t.ping_channel_id) == (4242, 4343)
+
+    def test_a_faction_the_fleet_does_not_know_is_refused(self, monkeypatch):
+        # ⚠️ Names BOTH causes: an unreachable registry and a faction that was
+        # never provisioned give the same empty answer, and sending somebody to
+        # provision one that already exists is the worse mistake.
+        import choon_registry
+        monkeypatch.setattr(choon_registry, "lookup", lambda s: None)
+        sent = run(leaves()["choon faction add"],
+                   FakeInteraction(uid=ADMIN, guild_id=FORGE_GUILD), slug="ghost")
+        assert "not provisioned" in body(sent) and "unreachable" in body(sent)
+        assert chain_tenants.get("ghost") is None
+
+    def test_a_fleet_entry_with_no_url_is_refused_by_name(self, monkeypatch):
+        import choon_registry
+        monkeypatch.setattr(choon_registry, "lookup",
+                            lambda s: {"slug": s, "base_url": None})
+        sent = run(leaves()["choon faction add"],
+                   FakeInteraction(uid=ADMIN, guild_id=FORGE_GUILD), slug="ghost")
+        assert "TENANT_BASE_DOMAIN" in body(sent)
+        assert chain_tenants.get("ghost") is None
 
     def test_a_councillor_may_not_remove_another_faction(self):
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
