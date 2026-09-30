@@ -241,3 +241,31 @@ class TestReadAuthorization:
 
 def cmd_for():
     return cmd()
+
+
+class TestWarOverviewTokenSource:
+    """⚠️ Same gap as Chain Watch's: without these, the fleet lookup could be
+    deleted and the suite would stay green."""
+
+    def test_the_fleet_supplies_it_and_wins_over_the_environment(self, monkeypatch):
+        import choon_registry
+        import war_overview_api
+        monkeypatch.setenv("WAR_OVERVIEW_TOKEN_FORGE", "stale-env")
+        monkeypatch.setattr(choon_registry, "token_for", lambda slug, field: "fresh-fleet")
+        assert war_overview_api.token_for("forge") == "fresh-fleet"
+
+    def test_the_environment_is_the_fallback(self, monkeypatch):
+        import choon_registry
+        import war_overview_api
+        monkeypatch.setattr(choon_registry, "token_for", lambda slug, field: None)
+        monkeypatch.setenv("WAR_OVERVIEW_TOKEN_FORGE", "env-value")
+        assert war_overview_api.token_for("forge") == "env-value"
+
+    def test_it_asks_for_its_own_scope(self, monkeypatch):
+        import choon_registry
+        import war_overview_api
+        seen = []
+        monkeypatch.setattr(choon_registry, "token_for",
+                            lambda slug, field: seen.append(field) or "x")
+        war_overview_api.token_for("forge")
+        assert seen == ["war_overview_token"]

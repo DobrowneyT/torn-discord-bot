@@ -27,7 +27,12 @@ class FakeResponse:
 @pytest.fixture(autouse=True)
 def token(monkeypatch):
     monkeypatch.setenv(reg.TOKEN_ENV, "t" * 64)
+    # ⚠️ The cache is module-global and would otherwise leak between tests —
+    # an outage case would quietly be served the previous test's success and
+    # pass for the wrong reason. It did.
+    reg.invalidate()
     yield
+    reg.invalidate()
 
 
 def serve(monkeypatch, response):

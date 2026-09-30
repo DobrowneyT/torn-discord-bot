@@ -28,6 +28,7 @@ from urllib.parse import urlencode
 import requests
 
 import chain_tenants
+import choon_registry
 
 log = logging.getLogger("war_overview_api")
 
@@ -46,8 +47,19 @@ def token_env(slug: str) -> str:
 
 
 def token_for(slug: str) -> Optional[str]:
-    """⚠️ Read on every use, never cached at import — a rotated token should
-    take effect on the next restart without anybody remembering this file."""
+    """
+    This faction's War Overview bearer — from the fleet, else the environment.
+
+    ⚠️ **The fleet first**, for the same reason as Chain Watch: the control
+    plane derives it from the fleet secret on demand, so a faction added from a
+    phone works immediately and a rotated secret propagates on its own.
+
+    ⚠️ The environment remains the fallback, so a control-plane outage cannot
+    stop a faction that is already working.
+    """
+    from_fleet = choon_registry.token_for(slug, "war_overview_token")
+    if from_fleet:
+        return from_fleet
     return os.environ.get(token_env(slug)) or None
 
 
@@ -71,8 +83,9 @@ def fetch(slug: str, **params: Any) -> Optional[Dict]:
     if not tok:
         # ⚠️ Named explicitly. A missing token is a provisioning mistake, not an
         # outage, and the two want different responses from whoever is looking.
-        log.warning("no War Overview token for %s — set %s in the environment",
-                    slug, token_env(slug))
+        log.warning("no War Overview token for %s — the control plane mints "
+                    "these; check FLEET_METRICS_SECRET on the admin container, "
+                    "or set %s as a fallback", slug, token_env(slug))
         return None
 
     clean = {k: v for k, v in params.items() if v is not None and v != ""}
