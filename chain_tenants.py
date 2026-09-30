@@ -30,6 +30,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional
 
+import choon_registry
 import state
 
 log = logging.getLogger("chain_tenants")
@@ -69,13 +70,26 @@ class Tenant:
 
     def token(self) -> Optional[str]:
         """
-        ⚠️ Read on every use, never cached at import.
+        This faction's Chain Watch bearer — from the fleet, else the environment.
 
-        A token rotated in the environment should take effect on the next
-        restart without anybody having to remember that this module snapshotted
-        it — and a missing one must read as missing at the moment it is needed,
-        not as an empty string that 401s mysteriously.
+        ⚠️ **The fleet first.** The control plane derives this from the fleet
+        secret on demand, so a faction added from a phone works immediately and
+        a rotated secret propagates on its own. Requiring somebody to SSH in,
+        run the token CLI and paste the result is why factions used to sit in
+        the list unable to poll.
+
+        ⚠️ **The environment still works, and that is deliberate.** It is the
+        fallback when the control plane cannot be reached, which is what stops
+        the registry becoming a hard dependency of a board that is already
+        running: an outage must not stop existing factions polling, only stop
+        new ones being added.
+
+        ⚠️ Read on every use, never cached here — `choon_registry` does the
+        caching, with a TTL short enough that a rotation applies by itself.
         """
+        from_fleet = choon_registry.token_for(self.slug, "chain_watch_token")
+        if from_fleet:
+            return from_fleet
         return os.environ.get(self.token_env) or None
 
     @property
@@ -138,6 +152,36 @@ def get(slug: str) -> Optional[Tenant]:
     return next((t for t in all_tenants() if t.slug == slug), None)
 
 
+def token_note(slug: str) -> str:
+    """
+    What to say about a faction's polling credential, if anything.
+
+    ⚠️ **Checks whether a token can actually be OBTAINED**, not whether an
+    environment variable happens to be set. The old check asked the wrong
+    question: it warned whenever `CHAIN_WATCH_TOKEN_<SLUG>` was absent, which is
+    now the normal and correct state — the control plane derives the value on
+    demand, so there is nothing to put in the environment.
+
+    ⚠️ **Silence when it works; a real warning when it does not.** The warning
+    is not removed, because the failure it describes still exists: if the fleet
+    secret is missing on the admin container, nothing can mint a token and the
+    faction will sit in the list unable to poll. Adding a faction that silently
+    never works is the failure this line exists to prevent — it just has to be
+    true to be worth reading.
+    """
+    env = TOKEN_ENV.format(slug.upper().replace("-", "_"))
+    if choon_registry.token_for(slug, "chain_watch_token"):
+        return ""
+    if os.environ.get(env):
+        # ⚠️ Worth saying: it works, but from the fallback. Nobody needs to act
+        # now, and somebody removing the variable later should know why it was
+        # load-bearing.
+        return f"\nPolling uses `{env}` from the environment — the fleet did not supply one."
+    return ("\n⚠️ No polling token could be obtained, so this faction will not poll. "
+            "The control plane mints these; check that `FLEET_METRICS_SECRET` is set "
+            "on the admin container and that the bot can reach the tenant registry.")
+
+
 def add(slug: str, base_url: str, guild_id: int,
         board_channel_id: int, ping_channel_id: int = 0):
     """Returns (ok, message) — the message is what Discord shows."""
@@ -161,10 +205,7 @@ def add(slug: str, base_url: str, guild_id: int,
                         keep_roles).to_dict())
     _save(items)
     verb = "updated" if replaced else "added"
-    env = TOKEN_ENV.format(slug.upper().replace("-", "_"))
-    note = "" if os.environ.get(env) else (
-        f"\n⚠️ `{env}` is not set, so polling will fail. "
-        "Set it in the bot's environment and restart — never through a command.")
+    note = token_note(slug)
     return True, f"Tenant `{slug}` {verb}.{note}"
 
 

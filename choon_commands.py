@@ -21,6 +21,7 @@ in `choon_auth` is still the boundary; this only decides what Discord can
 usefully express on top of it.
 """
 
+import asyncio
 import logging
 from typing import List, Optional
 
@@ -68,7 +69,10 @@ def register(tree: app_commands.CommandTree, *,
             # ⚠️ Report the MISSING token here rather than only at poll time. A
             # tenant added without one simply never draws a board, which looks
             # like the bot being broken instead of a config that is incomplete.
-            ok = "✅" if t.token() else f"⚠️ `{t.token_env}` not set"
+            # ⚠️ Asks whether a token can be OBTAINED, not whether an env var
+            # is set. The control plane mints these now, so an absent variable
+            # is the normal state rather than a fault.
+            ok = "✅" if t.token() else "⚠️ no polling token"
             # ⚠️ An unset board channel is reported here rather than only
             # showing as a board that never appears — which reads as the bot
             # being broken instead of a faction that is not finished being set
@@ -109,7 +113,10 @@ def register(tree: app_commands.CommandTree, *,
         elif not await _may_manage(interaction, wanted):
             return
 
-        entry = choon_registry.lookup(wanted)
+        # ⚠️ Off the event loop. `choon_registry` uses blocking `requests`, and
+        # a command handler is a coroutine — a slow control plane would stall
+        # every other interaction the bot is serving, not just this one.
+        entry = await asyncio.to_thread(choon_registry.lookup, wanted)
         if entry is None:
             # ⚠️ Names BOTH causes. The registry being down and the faction not
             # existing produce the same empty answer here, and sending somebody
@@ -232,14 +239,20 @@ def register(tree: app_commands.CommandTree, *,
         is a legitimate way to refresh its URL, but it is not what this picker is
         for, and offering them makes the list longer for the common case.
 
-        ⚠️ Empty on an unreachable registry, never a stale cache. Completing
-        from a list that might be wrong is how somebody points a faction at a
-        dashboard that has moved.
+        ⚠️ Bounded staleness, then empty. A successful answer is reused for
+        `choon_registry.CACHE_SECONDS`; past that an unreachable registry
+        completes nothing rather than offering a list that may be wrong.
+        Completing from a stale list is how somebody points a faction at a
+        dashboard that has moved — a five-minute window for a list that changes
+        when a faction is provisioned is a trade worth making, an unbounded one
+        is not.
         """
         cur = (current or "").lower()
         served = {t.slug for t in chain_tenants.all_tenants()}
+        # ⚠️ Off the event loop, as above — and this one fires per keystroke.
+        fleet = await asyncio.to_thread(choon_registry.slugs)
         return [app_commands.Choice(name=slug, value=slug)
-                for slug in choon_registry.slugs()
+                for slug in fleet
                 if cur in slug.lower() and slug not in served][:25]
 
     faction_add.autocomplete("slug")(_fleet_ac)

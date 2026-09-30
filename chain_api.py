@@ -34,8 +34,12 @@ def fetch_sync(tenant: "chain_tenants.Tenant") -> Optional[Dict]:
     if not token:
         # ⚠️ Named explicitly. A missing token is a provisioning mistake, not an
         # outage, and the two want different responses from whoever is looking.
-        log.warning("no token for %s — set %s in the environment",
-                    tenant.slug, tenant.token_env)
+        # ⚠️ Points at the control plane first. These are minted from the fleet
+        # secret now; the environment variable is only the fallback, so sending
+        # somebody there is sending them to the half that is usually fine.
+        log.warning("no token for %s — the control plane mints these; check "
+                    "FLEET_METRICS_SECRET on the admin container, or set %s "
+                    "as a fallback", tenant.slug, tenant.token_env)
         return None
     try:
         res = requests.get(
