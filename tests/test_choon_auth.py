@@ -186,3 +186,40 @@ class TestRolesSurviveAnEdit:
         t = chain_tenants.get("forge")
         assert t.board_channel_id == 99
         assert t.manager_role_ids == [FORGE_ROLE]
+
+
+class TestTheLegacyRoleActuallyReachesTheRuntime:
+    """
+    ⚠️ It did not, and that is why this class exists. `bot.py` built
+    `ChainRuntime(self)` with no `lead_role_id`, the default was 0, and the gate
+    it fed treated 0 as "no restriction" — so `CHAIN_LEAD_ROLE_ID` was set,
+    looked configured, and let every member of the server move a board. Measured
+    on the live box: the #825 migration did not fire because there was nothing to
+    migrate.
+    """
+
+    def test_the_runtime_asks_the_environment_when_the_caller_says_nothing(self, monkeypatch):
+        import chain_runtime
+        monkeypatch.setenv("CHAIN_LEAD_ROLE_ID", "4242")
+        assert chain_runtime.lead_role_id_from_env() == 4242
+
+    def test_an_explicit_zero_is_still_honoured(self, monkeypatch):
+        # A caller may say "no legacy role" deliberately; what must not happen is
+        # getting that by FORGETTING to say anything.
+        import discord
+        import chain_runtime
+        monkeypatch.setenv("CHAIN_LEAD_ROLE_ID", "4242")
+        # ⚠️ A CLIENT EACH. discord.py allows one CommandTree per client, and
+        # ChainRuntime builds one in __init__ — so two runtimes sharing a client
+        # raises. The same constraint that forces /rw-overview onto /chain's tree.
+        def runtime(**kw):
+            return chain_runtime.ChainRuntime(
+                discord.Client(intents=discord.Intents.default()), **kw)
+        assert runtime(lead_role_id=0).lead_role_id == 0
+        assert runtime().lead_role_id == 4242
+
+    def test_junk_does_not_stop_the_bot_booting(self, monkeypatch):
+        import chain_runtime
+        for junk in ("", "   ", "not-an-id", "12.5", "-7"):
+            monkeypatch.setenv("CHAIN_LEAD_ROLE_ID", junk)
+            assert chain_runtime.lead_role_id_from_env() == 0, junk
