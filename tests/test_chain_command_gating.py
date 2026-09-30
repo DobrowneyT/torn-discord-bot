@@ -13,6 +13,7 @@ from discord import app_commands
 import pytest
 
 import chain_commands
+import choon_commands
 import chain_tenants
 import choon_auth
 
@@ -64,6 +65,9 @@ def two_factions(tmp_path, monkeypatch):
 def leaves():
     tree = app_commands.CommandTree(discord.Client(intents=discord.Intents.default()))
     chain_commands.register(tree)
+    # ⚠️ Both roots: the faction commands moved to /choon in #826, and a
+    # walker that registers only /chain would report them as missing.
+    choon_commands.register(tree)
     out = {}
     for cmd in tree.get_commands():
         for sub in getattr(cmd, "commands", []):
@@ -156,7 +160,7 @@ class TestReadsAreLooser:
     def test_tenant_list_shows_only_what_the_caller_may_see(self):
         # ⚠️ The list carries every faction's dashboard URL.
         who = FakeInteraction(uid=3, guild_id=FORGE_GUILD, roles=())
-        shown = body(run(leaves()["chain tenant list"], who))
+        shown = body(run(leaves()["choon faction list"], who))
         assert "forge" in shown and "tnl" not in shown
 
 
@@ -166,7 +170,7 @@ class TestTenantAdministration:
         # so a manager gate on creation would be a gate on nothing.
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
         ch = type("C", (), {"id": 77})()
-        sent = run(leaves()["chain tenant add"], who,
+        sent = run(leaves()["choon faction add"], who,
                    slug="brand-new", base_url="https://new.x", board_channel=ch)
         assert "bot-admin control" in body(sent)
         assert chain_tenants.get("brand-new") is None
@@ -174,13 +178,13 @@ class TestTenantAdministration:
     def test_a_councillor_may_still_edit_their_own_factions_entry(self):
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
         ch = type("C", (), {"id": 88})()
-        run(leaves()["chain tenant add"], who,
+        run(leaves()["choon faction add"], who,
             slug="forge", base_url="https://forge.x", board_channel=ch)
         assert chain_tenants.get("forge").board_channel_id == 88
 
     def test_a_councillor_may_not_remove_another_faction(self):
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
-        run(leaves()["chain tenant remove"], who, slug="tnl")
+        run(leaves()["choon faction remove"], who, slug="tnl")
         assert chain_tenants.get("tnl") is not None
 
     def test_granting_a_role_authority_is_admin_only(self):
@@ -189,7 +193,7 @@ class TestTenantAdministration:
         who = FakeInteraction(uid=2, guild_id=FORGE_GUILD, roles=(FORGE_ROLE,))
         role = type("R", (), {"id": 999})()
         choice = app_commands.Choice(name="allow this role", value="add")
-        sent = run(leaves()["chain tenant role"], who,
+        sent = run(leaves()["choon faction role"], who,
                    slug="forge", action=choice, role=role)
         assert "bot-admin control" in body(sent)
         assert chain_tenants.get("forge").manager_role_ids == [FORGE_ROLE]
@@ -197,11 +201,11 @@ class TestTenantAdministration:
     def test_an_admin_can_grant_and_revoke(self):
         admin = FakeInteraction(uid=ADMIN, guild_id=FORGE_GUILD)
         role = type("R", (), {"id": 999})()
-        run(leaves()["chain tenant role"], admin, slug="forge",
+        run(leaves()["choon faction role"], admin, slug="forge",
             action=app_commands.Choice(name="a", value="add"), role=role)
         assert 999 in chain_tenants.get("forge").manager_role_ids
         admin2 = FakeInteraction(uid=ADMIN, guild_id=FORGE_GUILD)
-        run(leaves()["chain tenant role"], admin2, slug="forge",
+        run(leaves()["choon faction role"], admin2, slug="forge",
             action=app_commands.Choice(name="r", value="remove"), role=role)
         assert 999 not in chain_tenants.get("forge").manager_role_ids
 
@@ -210,7 +214,7 @@ class TestTenantAdministration:
         # opposite of what happens.
         admin = FakeInteraction(uid=ADMIN, guild_id=FORGE_GUILD)
         role = type("R", (), {"id": FORGE_ROLE})()
-        sent = run(leaves()["chain tenant role"], admin, slug="forge",
+        sent = run(leaves()["choon faction role"], admin, slug="forge",
                    action=app_commands.Choice(name="r", value="remove"), role=role)
         assert "only a bot admin" in body(sent)
 

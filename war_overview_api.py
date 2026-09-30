@@ -2,7 +2,7 @@
 Talking to a tenant's dashboard for the War Overview (#811).
 
 One client for one endpoint — `GET /api/internal/war-overview` — used by
-`/rw-overview`.
+`/rw overview`.
 
 ⚠️ **Its own token, deliberately.** `WAR_OVERVIEW_TOKEN_<SLUG>`, derived from a
 different HMAC scope than Chain Watch's. The same bot holds both, and scoping
@@ -65,7 +65,7 @@ def fetch(slug: str, **params: Any) -> Optional[Dict]:
     """
     base = base_url_for(slug)
     if not base:
-        log.warning("no tenant called %s — add it with /chain tenant add", slug)
+        log.warning("no tenant called %s — add it with /choon faction add", slug)
         return None
     tok = token_for(slug)
     if not tok:

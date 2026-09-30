@@ -30,6 +30,8 @@ import logging
 import os
 from typing import List, Optional, Tuple
 
+import discord
+
 import chain_tenants
 
 log = logging.getLogger("choon_auth")
@@ -96,7 +98,7 @@ def may_read(interaction, slug: str) -> Tuple[bool, Optional[str]]:
     Guild-scoped, not role-scoped: any member of the guild a tenant is bound to
     may read it, and a bot admin may read everything.
 
-    ⚠️ This gate is new rather than loosened. `/rw-overview` shipped with no
+    ⚠️ This gate is new rather than loosened. `/rw overview` shipped with no
     check at all, so any member of the server could pull any configured
     faction's full member-by-member war history.
     """
@@ -129,7 +131,7 @@ def may_manage(interaction, slug: str) -> Tuple[bool, Optional[str]]:
     if not wanted:
         # ⚠️ Fail closed — see the module note.
         return False, (f"`{slug}` has no manager roles configured, so only a bot admin "
-                       f"can change it. Set one with `/chain tenant role`.")
+                       f"can change it. Set one with `/choon faction role`.")
     if any(rid in wanted for rid in _role_ids(_user_of(interaction))):
         return True, None
     names = ", ".join(f"<@&{r}>" for r in wanted)
@@ -140,12 +142,12 @@ def _same_guild(interaction, tenant) -> Tuple[bool, Optional[str]]:
     """
     ⚠️ `guild_id == 0` on a tenant means it predates the field being recorded.
     Treated as "no guild matches", not "every guild matches" — the same
-    fail-closed rule. It is fixed by re-running `/chain tenant add` in the right
+    fail-closed rule. It is fixed by re-running `/choon faction add` in the right
     server, which is what the refusal says.
     """
     if not tenant.guild_id:
         return False, (f"`{tenant.slug}` is not bound to a Discord server yet, so only a "
-                       f"bot admin can act on it. Re-add it with `/chain tenant add` "
+                       f"bot admin can act on it. Re-add it with `/choon faction add` "
                        f"in the server it belongs to.")
     if int(getattr(interaction, "guild_id", 0) or 0) != tenant.guild_id:
         return False, f"`{tenant.slug}` belongs to a different Discord server."
@@ -189,3 +191,38 @@ def may_manage_any(interaction) -> Tuple[bool, Optional[str]]:
         return True, None
     return False, ("That is a leadership control — you need a manager role for one of "
                    "the factions in this server.")
+
+
+# ── Discord-side helpers ─────────────────────────────────────────────────────
+#
+# ⚠️ Here rather than in one command module so `/chain`, `/choon` and `/rw`
+# all refuse in the same words. Three copies of a refusal drift, and a gate
+# that explains itself differently depending on which command you hit reads
+# as three different rules.
+
+async def refuse(interaction: discord.Interaction, why: str) -> None:
+    await interaction.response.send_message(why, ephemeral=True)
+
+
+async def require_manage(interaction: discord.Interaction, slug: str) -> bool:
+    """
+    Gate a write on ONE faction (#825). Replies with the reason and returns
+    False when refused.
+
+    ⚠️ Keyed on `slug` — the faction being ACTED ON — never on where the command
+    was typed. A forge councillor standing in a forge channel running
+    `/chain channel faction:tnl` is refused here.
+    """
+    ok, why = may_manage(interaction, slug)
+    if not ok:
+        await refuse(interaction, why or "Not allowed.")
+    return ok
+
+
+async def require_read(interaction: discord.Interaction, slug: str) -> bool:
+    """Gate a read on one faction — guild-scoped, no role needed."""
+    ok, why = may_read(interaction, slug)
+    if not ok:
+        await refuse(interaction, why or "Not allowed.")
+    return ok
+

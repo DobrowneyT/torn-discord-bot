@@ -1,5 +1,5 @@
 """
-The bin-size argument for `/rw-overview` (#811 follow-up).
+The bin-size argument for `/rw overview` (#811 follow-up).
 
 ⚠️ **The same widths the page's Bin size control offers** — Auto, 1m, 5m, 1h,
 6h, 1d. A chart in Discord drawn at a width the page cannot produce, or

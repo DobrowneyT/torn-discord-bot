@@ -1,5 +1,5 @@
 """
-`/rw-overview` — post a war's summary into Discord (#811).
+`/rw overview` — post a war's summary into Discord (#811).
 
 ⚠️ **Nothing is counted here.** Every figure comes from the dashboard's
 `/api/internal/war-overview`, which runs the same summary the page does and is
@@ -7,7 +7,7 @@ held level with it by a parity test on that side. This module resolves the
 command's arguments, fetches, and renders.
 
 ⚠️ **The command TREE is shared; nothing else is.** discord.py allows exactly
-one `CommandTree` per client, so `/rw-overview` necessarily registers onto the
+one `CommandTree` per client, so `/rw overview` necessarily registers onto the
 same tree as `/chain`. That is a library constraint, not a coupling: no Chain
 Watch module, table, setting or token is touched, and War Overview is enabled by
 its own `WAR_OVERVIEW_TOKEN_*` independently of whether Chain Watch is on.
@@ -74,7 +74,7 @@ def resolve(faction: Optional[str]):
     if len(tenants) == 1:
         return tenants[0].slug, None
     if not tenants:
-        return None, "No factions are configured yet — add one with `/chain tenant add`."
+        return None, "No factions are configured yet — add one with `/choon faction add`."
     known = ", ".join(f"`{t.slug}`" for t in tenants)
     return None, f"Several factions are configured — say which: {known}."
 
@@ -114,10 +114,17 @@ def validate_bins(raw: Optional[str]):
 
 
 def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] = None) -> None:
-    """Attach `/rw-overview` to an EXISTING tree — see the note at the top."""
+    """Attach `/rw overview` to an EXISTING tree — see the note at the top."""
 
-    @tree.command(name="rw-overview",
-                  description="Post a ranked war's summary — faction-wide or for one member")
+    # ⚠️ A GROUP, not a hyphenated top-level name (#826). `/rw` leaves room for
+    # `/rw payout` and `/rw summary` without a third top-level command, and it
+    # gives Discord a command id of its own so `/rw` can be opened to members in
+    # Integrations while `/chain` stays with leadership — overrides attach to a
+    # command id, and subcommands have none.
+    rw = app_commands.Group(name="rw", description="Ranked war reporting")
+
+    @rw.command(name="overview",
+                description="Post a ranked war's summary — faction-wide or for one member")
     @app_commands.describe(
         faction="Which faction's dashboard to read",
         war="Which war",
@@ -256,5 +263,4 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         return [app_commands.Choice(name=label, value=value)
                 for label, value in fmt.member_choices(payload, current)]
 
-    if guild is not None:
-        pass  # the host syncs; nothing guild-specific here
+    tree.add_command(rw, guild=guild)
