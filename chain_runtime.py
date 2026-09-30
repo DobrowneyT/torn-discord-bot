@@ -53,6 +53,25 @@ def guild_ids_from_env() -> List[int]:
     return [int(p) for p in raw.replace(" ", "").split(",") if p.isdigit()]
 
 
+def lead_role_id_from_env() -> int:
+    """
+    The legacy global leadership role, for the one-time #825 migration.
+
+    ⚠️ **Read here rather than taken from the caller**, matching
+    `guild_ids_from_env`. `bot.py` constructed `ChainRuntime(self)` with no
+    `lead_role_id`, so it defaulted to 0 — and the gate it fed returned True when
+    the id was 0. The result was that `CHAIN_LEAD_ROLE_ID` was set in the
+    environment, looked configured to anybody reading the file, and **never
+    reached the runtime**: every member of the server could move a board. A
+    default that means "no restriction" is only safe if it cannot be reached by
+    forgetting an argument, and it could.
+
+    Junk is ignored rather than fatal, as above.
+    """
+    raw = (os.environ.get("CHAIN_LEAD_ROLE_ID") or "").strip()
+    return int(raw) if raw.isdigit() else 0
+
+
 def chain_enabled() -> bool:
     """
     ⚠️ Opt-in, so adding this to a running bot changes nothing until asked.
@@ -72,10 +91,15 @@ class ChainRuntime:
     and `start()` from its `on_ready`.
     """
 
-    def __init__(self, client: discord.Client, *, lead_role_id: int = 0,
+    def __init__(self, client: discord.Client, *, lead_role_id: Optional[int] = None,
                  guild_ids: Optional[List[int]] = None):
         self.client = client
-        self.lead_role_id = lead_role_id
+        # ⚠️ `None` means "ask the environment", the same contract `guild_ids`
+        # uses. An explicit 0 still means "no legacy role", so a caller can say
+        # that deliberately — but a caller who says nothing gets the configured
+        # value rather than silently getting none.
+        self.lead_role_id = (lead_role_id if lead_role_id is not None
+                             else lead_role_id_from_env())
         self.guild_ids = guild_ids if guild_ids is not None else guild_ids_from_env()
         self.tree = app_commands.CommandTree(client)
         self.watcher = chain_watcher.ChainWatcher(
