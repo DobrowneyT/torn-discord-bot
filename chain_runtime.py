@@ -86,7 +86,33 @@ class ChainRuntime:
         # poll stale — where it was before this existed.
         self.notify = chain_notify.NotifyServer(self._redraw_one)
 
+    def _adopt_legacy_lead_role(self) -> None:
+        """
+        Carry `CHAIN_LEAD_ROLE_ID` onto the sole tenant's manager roles (#825).
+
+        ⚠️ **Only when there is exactly one tenant.** That variable is one
+        faction's council role that happened to be serving as a global gate;
+        with several tenants configured there is no way to tell whose it is, and
+        guessing would hand one faction's council authority over another's board
+        — the exact thing #825 removes. With several, it is logged and ignored,
+        and the operator sets roles per faction with `/chain tenant role`.
+
+        ⚠️ Never overwrites roles somebody chose — see
+        `chain_tenants.adopt_legacy_lead_role`.
+        """
+        if not self.lead_role_id:
+            return
+        tenants = chain_tenants.all_tenants()
+        if len(tenants) != 1:
+            log.warning(
+                "CHAIN_LEAD_ROLE_ID is set but %d tenants are configured — cannot tell "
+                "which faction it belongs to. Authority is per faction now (#825); set "
+                "each faction's roles with /chain tenant role.", len(tenants))
+            return
+        chain_tenants.adopt_legacy_lead_role(tenants[0].slug, self.lead_role_id)
+
     async def setup(self) -> None:
+        self._adopt_legacy_lead_role()
         chain_commands.register(self.tree, lead_role_id=self.lead_role_id,
                                 on_change=self.refresh_now,
                                 sender=self.watcher.sender)

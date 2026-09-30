@@ -22,6 +22,7 @@ import discord
 from discord import app_commands
 
 import chain_tenants
+import choon_auth
 import war_overview_api as api
 import war_overview_bins as binsize
 import war_overview_chart as chart
@@ -41,10 +42,17 @@ def enabled() -> bool:
                for k, v in os.environ.items())
 
 
-def slug_choices(current: str) -> List[app_commands.Choice]:
+def slug_choices(current: str, interaction=None) -> List[app_commands.Choice]:
+    """
+    ⚠️ Narrowed to the factions this caller may read (#825). Offering the rest
+    teaches people their permissions by refusing them, and hands every member
+    the full list of configured factions for free.
+    """
     cur = (current or "").lower()
+    allowed = None if interaction is None else set(choon_auth.readable_slugs(interaction))
     return [app_commands.Choice(name=t.slug, value=t.slug)
-            for t in chain_tenants.all_tenants() if cur in t.slug.lower()][:25]
+            for t in chain_tenants.all_tenants()
+            if cur in t.slug.lower() and (allowed is None or t.slug in allowed)][:25]
 
 
 def resolve(faction: Optional[str]):
@@ -141,6 +149,15 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         if err:
             await interaction.response.send_message(err, ephemeral=True)
             return
+        # ⚠️ A READ gate, added with #825. This command shipped with none at all,
+        # so any member of the server could pull any configured faction's full
+        # member-by-member war history. Guild-scoped rather than role-scoped:
+        # anybody in a faction's own server may read its wars, and a bot admin
+        # may read every faction's.
+        allowed, refusal = choon_auth.may_read(interaction, slug)
+        if not allowed:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
         mode = type.value
         bad = validate(mode, member)
         if bad:
@@ -200,7 +217,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
 
     @rw_overview.autocomplete("faction")
     async def _faction_ac(interaction: discord.Interaction, current: str):
-        return slug_choices(current)
+        return slug_choices(current, interaction)
 
     @rw_overview.autocomplete("bins")
     async def _bins_ac(interaction: discord.Interaction, current: str):
@@ -215,7 +232,9 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # ⚠️ One fetch per keystroke is why the picker payload is its own cheap
         # shape on the dashboard — asking for a war id returns the whole war.
         slug, err = resolve(interaction.namespace.faction)
-        if err:
+        # ⚠️ Gated too. An autocomplete that answers for a faction the command
+        # would refuse leaks the war list — and the opponent names — anyway.
+        if err or not choon_auth.may_read(interaction, slug)[0]:
             return []
         payload = api.fetch(slug)
         if payload is None:
@@ -227,6 +246,9 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     async def _member_ac(interaction: discord.Interaction, current: str):
         slug, err = resolve(interaction.namespace.faction)
         if err or not interaction.namespace.war:
+            return []
+        # ⚠️ Same reasoning as the war picker: this one lists member names.
+        if not choon_auth.may_read(interaction, slug)[0]:
             return []
         payload = api.fetch(slug, war=interaction.namespace.war)
         if payload is None:

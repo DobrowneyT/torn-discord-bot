@@ -186,18 +186,60 @@ def test_tenant_add_does_not_complete_the_slug_of_an_existing_faction():
     assert _param(_leaves(build())["chain tenant add"], "slug").autocomplete is False
 
 
-def test_the_autocomplete_lists_what_is_configured_right_now():
+class _FakeRole:
+    def __init__(self, rid): self.id = rid
+
+
+class _FakeInteraction:
+    """Enough of an Interaction for the authorization checks (#825)."""
+    def __init__(self, uid=1, guild_id=1, roles=()):
+        self.guild_id = guild_id
+        self.user = type("M", (), {"id": uid, "roles": [_FakeRole(r) for r in roles]})()
+
+
+def test_the_autocomplete_lists_what_is_configured_right_now(monkeypatch):
     chain_tenants.add("forge", "https://forge.monchoon.me", 1, 10)
     chain_tenants.add("tnl", "https://tnl.monchoon.me", 2, 20)
+    # ⚠️ An admin, because the picker is narrowed by authority now (#825). This
+    # test is about the list being read at CALL time rather than snapshotted at
+    # import, so it needs a caller who can see everything.
+    monkeypatch.setenv("CHOON_ADMIN_USER_IDS", "7")
+    who = _FakeInteraction(uid=7)
     cmd = _leaves(build())["chain channel"]
     # ⚠️ `cmd.parameters[i].autocomplete` is a BOOL on the public wrapper; the
     # callback itself lives on the internal CommandParameter. Asserting on the
     # bool alone would pass against a callback that returns nothing.
     callback = cmd._params["faction"].autocomplete
-    choices = asyncio.run(callback(None, ""))
+    choices = asyncio.run(callback(who, ""))
     assert {c.value for c in choices} == {"forge", "tnl"}
-    narrowed = asyncio.run(callback(None, "fo"))
+    narrowed = asyncio.run(callback(who, "fo"))
     assert [c.value for c in narrowed] == ["forge"]
+
+
+def test_an_autocomplete_never_raises_even_with_nothing_to_go_on():
+    # ⚠️ A raising autocomplete is INVISIBLE: Discord shows an empty picker and
+    # no error reaches anybody. Failing closed is the only safe behaviour, so it
+    # is pinned rather than left to luck.
+    chain_tenants.add("forge", "https://forge.monchoon.me", 1, 10)
+    callback = _leaves(build())["chain channel"]._params["faction"].autocomplete
+    assert asyncio.run(callback(None, "")) == []
+
+
+def test_the_write_picker_is_narrower_than_the_read_picker(monkeypatch):
+    # ⚠️ Two factions in ONE guild — the case where the guild check passes and
+    # only the role check separates them. A single shared picker would offer
+    # both for /chain channel.
+    monkeypatch.delenv("CHOON_ADMIN_USER_IDS", raising=False)
+    chain_tenants.add("forge", "https://forge.monchoon.me", 1, 10)
+    chain_tenants.add("tnl", "https://tnl.monchoon.me", 1, 20)
+    chain_tenants.set_manager_roles("forge", [500])
+    chain_tenants.set_manager_roles("tnl", [501])
+    leaves = _leaves(build())
+    councillor = _FakeInteraction(uid=2, guild_id=1, roles=(500,))
+    write = leaves["chain channel"]._params["faction"].autocomplete
+    read = leaves["chain settings"]._params["faction"].autocomplete
+    assert [c.value for c in asyncio.run(write(councillor, ""))] == ["forge"]
+    assert {c.value for c in asyncio.run(read(councillor, ""))} == {"forge", "tnl"}
 
 
 # ── refusing a channel the bot cannot write in ──────────────────────────────
