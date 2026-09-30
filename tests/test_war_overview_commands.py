@@ -167,3 +167,60 @@ class TestApiTokens:
             chain_tenants.remove(t.slug)
         monkeypatch.setenv("WAR_OVERVIEW_TOKEN_GHOST", "z" * 64)
         assert api.fetch("ghost") is None
+
+
+class TestReadAuthorization:
+    """
+    `/rw-overview` shipped with NO gate (#825). Any member of the server could
+    pull any configured faction's full member-by-member war history.
+    """
+
+    class _Role:
+        def __init__(self, rid): self.id = rid
+
+    def _interaction(self, uid=1, guild_id=111, roles=()):
+        class R:
+            def __init__(s): s.sent = []
+            async def send_message(s, content=None, **kw): s.sent.append(content or kw)
+        class I:
+            pass
+        i = I()
+        i.guild_id = guild_id
+        i.user = type("M", (), {"id": uid,
+                                "roles": [TestReadAuthorization._Role(r) for r in roles]})()
+        i.response = R()
+        return i
+
+    def _two_factions(self, tmp_path, monkeypatch):
+        import state
+        monkeypatch.setattr(state, "STATE_PATH", str(tmp_path / "state.json"), raising=False)
+        chain_tenants._save([
+            chain_tenants.Tenant("forge", "https://forge.x", 111, 1).to_dict(),
+            chain_tenants.Tenant("tnl", "https://tnl.x", 222, 2).to_dict(),
+        ])
+
+    def test_a_member_cannot_read_another_guilds_faction(self, tmp_path, monkeypatch):
+        import asyncio
+        import choon_auth
+        self._two_factions(tmp_path, monkeypatch)
+        monkeypatch.delenv(choon_auth.ADMIN_ENV, raising=False)
+        who = self._interaction(guild_id=111)
+        cmd = cmd_for()
+        asyncio.run(cmd.callback(who, faction="tnl", war="1",
+                                 type=app_commands.Choice(name="f", value="faction")))
+        assert "different Discord server" in str(who.response.sent[0])
+
+    def test_the_faction_picker_hides_what_cannot_be_read(self, tmp_path, monkeypatch):
+        import asyncio
+        import choon_auth
+        self._two_factions(tmp_path, monkeypatch)
+        monkeypatch.delenv(choon_auth.ADMIN_ENV, raising=False)
+        who = self._interaction(guild_id=111)
+        # ⚠️ Otherwise the picker hands every member the full list of configured
+        # factions, and they learn their permissions by being refused.
+        cb = cmd_for()._params["faction"].autocomplete
+        assert [c.value for c in asyncio.run(cb(who, ""))] == ["forge"]
+
+
+def cmd_for():
+    return next(c for c in build().get_commands() if c.name == "rw-overview")

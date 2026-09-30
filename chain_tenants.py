@@ -47,12 +47,16 @@ class Tenant:
     """One faction, and everything needed to talk to it and about it."""
 
     def __init__(self, slug: str, base_url: str, guild_id: int,
-                 board_channel_id: int, ping_channel_id: int = 0):
+                 board_channel_id: int, ping_channel_id: int = 0,
+                 manager_role_ids: Optional[List[int]] = None):
         self.slug = slug
         self.base_url = base_url.rstrip("/")
         self.guild_id = int(guild_id)
         self.board_channel_id = int(board_channel_id)
         self.ping_channel_id = int(ping_channel_id)
+        #: Roles allowed to CHANGE this faction (#825). Empty means bot-admin
+        #: only — see the fail-closed note in `choon_auth`.
+        self.manager_role_ids = [int(r) for r in (manager_role_ids or [])]
 
     @property
     def pings_to(self) -> int:
@@ -94,6 +98,7 @@ class Tenant:
             "guild_id": self.guild_id,
             "board_channel_id": self.board_channel_id,
             "ping_channel_id": self.ping_channel_id,
+            "manager_role_ids": self.manager_role_ids,
         }
 
     @classmethod
@@ -102,6 +107,7 @@ class Tenant:
             slug=d["slug"], base_url=d["base_url"], guild_id=d.get("guild_id", 0),
             board_channel_id=d.get("board_channel_id", 0),
             ping_channel_id=d.get("ping_channel_id", 0),
+            manager_role_ids=d.get("manager_role_ids") or [],
         )
 
 
@@ -143,9 +149,16 @@ def add(slug: str, base_url: str, guild_id: int,
         # readable by anything between here and the box, five times a minute,
         # forever.
         return False, "The dashboard URL must start with `https://`."
+    existing = next((t for t in _store() if t.get("slug") == slug), None)
     items = [t for t in _store() if t.get("slug") != slug]
-    replaced = len(items) != len(_store())
-    items.append(Tenant(slug, base_url, guild_id, board_channel_id, ping_channel_id).to_dict())
+    replaced = existing is not None
+    # ⚠️ Manager roles SURVIVE an update. `add` doubles as "edit", and silently
+    # dropping a faction's roles would fail it closed to bot-admin-only the next
+    # time somebody corrected its board channel — a permission change nobody
+    # asked for, arriving as a side effect of an unrelated edit.
+    keep_roles = (existing or {}).get("manager_role_ids") or []
+    items.append(Tenant(slug, base_url, guild_id, board_channel_id, ping_channel_id,
+                        keep_roles).to_dict())
     _save(items)
     verb = "updated" if replaced else "added"
     env = TOKEN_ENV.format(slug.upper().replace("-", "_"))
@@ -162,3 +175,39 @@ def remove(slug: str):
         return False, f"No tenant called `{slug}`."
     _save(kept)
     return True, f"Tenant `{slug}` removed."
+
+
+def set_manager_roles(slug: str, role_ids: List[int]):
+    """Replace a faction's manager roles. Returns (ok, message)."""
+    items = _store()
+    for raw in items:
+        if raw.get("slug") == slug:
+            raw["manager_role_ids"] = sorted({int(r) for r in role_ids})
+            _save(items)
+            return True, raw["manager_role_ids"]
+    return False, f"No tenant called `{slug}`."
+
+
+def adopt_legacy_lead_role(slug: str, role_id: int) -> bool:
+    """
+    Carry the old global `CHAIN_LEAD_ROLE_ID` onto ONE tenant, once (#825).
+
+    Returns True when it was written, False when there was nothing to do.
+
+    ⚠️ **One tenant, and only when it has none of its own.** That variable is
+    forge's council role which happened to be serving as a global one; applying
+    it to every tenant — or re-applying it after somebody deliberately changed a
+    faction's roles — would re-create exactly the cross-tenant authority #825
+    removes.
+    """
+    if not role_id:
+        return False
+    tenant = get(slug)
+    if tenant is None or tenant.manager_role_ids:
+        return False
+    ok, _ = set_manager_roles(slug, [int(role_id)])
+    if ok:
+        log.warning("adopted legacy lead role %s as %s's manager role; "
+                    "CHAIN_LEAD_ROLE_ID is now superseded by per-tenant roles",
+                    role_id, slug)
+    return bool(ok)
