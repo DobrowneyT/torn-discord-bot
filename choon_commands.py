@@ -30,6 +30,7 @@ from discord import app_commands
 import chain_settings
 import chain_tenants
 import choon_auth
+import choon_registry
 from choon_auth import refuse as _refuse, require_manage as _may_manage
 
 log = logging.getLogger("choon_commands")
@@ -68,49 +69,81 @@ def register(tree: app_commands.CommandTree, *,
             # tenant added without one simply never draws a board, which looks
             # like the bot being broken instead of a config that is incomplete.
             ok = "✅" if t.token() else f"⚠️ `{t.token_env}` not set"
-            lines.append(f"**`{t.slug}`** — {t.base_url}\n"
-                         f"board <#{t.board_channel_id}> · pings <#{t.pings_to}> · {ok}")
+            # ⚠️ An unset board channel is reported here rather than only
+            # showing as a board that never appears — which reads as the bot
+            # being broken instead of a faction that is not finished being set
+            # up. `/chain channel` is what completes it.
+            board = (f"board <#{t.board_channel_id}>" if t.board_channel_id
+                     else "⚠️ no board channel — run `/chain channel`")
+            pings = f" · pings <#{t.pings_to}>" if t.pings_to else ""
+            lines.append(f"**`{t.slug}`** — {t.base_url}\n{board}{pings} · {ok}")
         await interaction.response.send_message(
             embed=discord.Embed(title="Factions this bot serves",
                                 description="\n\n".join(lines)[:4000], color=0x3498DB),
             ephemeral=True)
 
-    @faction.command(name="add", description="Add or update a faction")
-    @app_commands.describe(
-        slug="The faction's dashboard slug, e.g. forge",
-        base_url="Its dashboard URL, e.g. https://forge.monchoon.me",
-        board_channel="Where the standing board lives",
-        ping_channel="Where shift pings go (defaults to the board channel)",
-    )
-    async def faction_add(interaction: discord.Interaction, slug: str, base_url: str,
-                         board_channel: discord.TextChannel,
-                         ping_channel: Optional[discord.TextChannel] = None) -> None:
-        # ⚠️ No token parameter, deliberately. Slash command arguments are
-        # visible to the client and land in logs; a tenant bearer pasted into a
-        # channel is a leaked credential for that faction. It comes from the
-        # environment — see chain_tenants.TOKEN_ENV.
-        # ⚠️ Creating a faction is ADMIN-ONLY, and editing one takes that
-        # faction's own manager check. Nobody can hold a manager role for a
-        # faction that does not exist yet, so a "manager" gate on creation would
-        # be a gate on nothing — anyone could add a tenant pointed at any
-        # dashboard and then manage it.
+    @faction.command(name="add", description="Serve a faction the fleet already knows about")
+    @app_commands.describe(slug="Which faction — the list comes from the dashboard fleet")
+    async def faction_add(interaction: discord.Interaction, slug: str) -> None:
+        """
+        ⚠️ **The slug is the only thing typed.** The dashboard control plane
+        already knows every faction and its URL — it derives the list from
+        `pg_database`, so it is right the moment one is provisioned. Asking for
+        the URL again meant retyping what was already known, and the two copies
+        drifted the first time a tenant was renamed.
+
+        ⚠️ **No channel parameters.** Where a faction's board and pings go is
+        Chain Watch's business, not the bot's tenant list, and `/chain channel`
+        already sets both from wherever it is typed — which is better than
+        typing a channel id, because it cannot name a channel you cannot see.
+
+        ⚠️ No token parameter either, for the original reason: slash command
+        arguments are visible client-side and land in logs.
+        """
         wanted = (slug or "").strip().lower()
-        if chain_tenants.get(wanted) is None:
+        existing = chain_tenants.get(wanted)
+        if existing is None:
             if not choon_auth.is_admin(interaction.user.id):
-                await _refuse(interaction,
-                              "Adding a new faction is a bot-admin control.")
+                await _refuse(interaction, "Adding a new faction is a bot-admin control.")
                 return
         elif not await _may_manage(interaction, wanted):
             return
+
+        entry = choon_registry.lookup(wanted)
+        if entry is None:
+            # ⚠️ Names BOTH causes. The registry being down and the faction not
+            # existing produce the same empty answer here, and sending somebody
+            # to provision a faction that is already there is the worse mistake.
+            await _refuse(
+                interaction,
+                f"Could not find `{wanted}` in the fleet. Either it is not provisioned "
+                f"on the dashboard, or the tenant registry is unreachable — the bot's "
+                f"log says which.")
+            return
+        base_url = entry.get("base_url")
+        if not base_url:
+            await _refuse(
+                interaction,
+                f"The fleet knows `{wanted}` but not its public URL — "
+                f"`TENANT_BASE_DOMAIN` is not set on the admin container.")
+            return
+
         # ⚠️ The guild is taken from WHERE THE COMMAND WAS RUN, not typed. A
         # mistyped guild id silently scopes the identity auto-match (#784) to
         # the wrong server, which links the wrong people to the wrong shifts.
         guild_id = interaction.guild_id or 0
-        ok, message = chain_tenants.add(
-            slug, base_url, guild_id, board_channel.id,
-            ping_channel.id if ping_channel else 0)
-        if ok and chain_settings.adopt_legacy(slug.strip().lower()):
+        # ⚠️ Channels start unset. `/chain channel` is what points a faction's
+        # board and pings somewhere, and `faction list` flags the gap until it
+        # has been run — a tenant that silently never draws a board reads as the
+        # bot being broken.
+        keep_board = existing.board_channel_id if existing else 0
+        keep_ping = existing.ping_channel_id if existing else 0
+        ok, message = chain_tenants.add(wanted, base_url, guild_id, keep_board, keep_ping)
+        if ok and chain_settings.adopt_legacy(wanted):
             message += "\nCarried over the settings from before this bot was multi-faction."
+        if ok and not keep_board:
+            message += ("\n⚠️ No board channel yet — run `/chain channel` in the channel "
+                        "it should post to.")
         await interaction.response.send_message(message, ephemeral=True)
         if ok and on_change:
             await on_change()
@@ -185,10 +218,31 @@ def register(tree: app_commands.CommandTree, *,
     async def _managed_ac(interaction: discord.Interaction, current: str):
         return _slug_choices(current, choon_auth.manageable_slugs(interaction))
 
-    # ⚠️ `faction add` gets NO picker: its `slug` names a faction that does not
-    # exist yet, so completing it from the ones that do is at best noise and at
-    # worst an invitation to overwrite a live tenant. It is the same exception
-    # that lived in chain_commands, carried over with the commands.
+    async def _fleet_ac(interaction: discord.Interaction, current: str):
+        """
+        Factions the FLEET knows that this bot does not serve yet.
+
+        ⚠️ This command used to have no picker at all, because its slug named a
+        faction that did not exist yet and completing it from the ones that did
+        was an invitation to overwrite a live tenant. A registry changes that:
+        the fleet now knows what exists before the bot does, so the picker can
+        offer exactly the factions worth adding.
+
+        ⚠️ Already-served factions are excluded rather than shown. Re-adding one
+        is a legitimate way to refresh its URL, but it is not what this picker is
+        for, and offering them makes the list longer for the common case.
+
+        ⚠️ Empty on an unreachable registry, never a stale cache. Completing
+        from a list that might be wrong is how somebody points a faction at a
+        dashboard that has moved.
+        """
+        cur = (current or "").lower()
+        served = {t.slug for t in chain_tenants.all_tenants()}
+        return [app_commands.Choice(name=slug, value=slug)
+                for slug in choon_registry.slugs()
+                if cur in slug.lower() and slug not in served][:25]
+
+    faction_add.autocomplete("slug")(_fleet_ac)
     faction_remove.autocomplete("slug")(_managed_ac)
     faction_role.autocomplete("slug")(_readable_ac)
 
