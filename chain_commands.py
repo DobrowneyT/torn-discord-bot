@@ -26,6 +26,7 @@ import chain_posts
 import chain_link_sync
 import chain_settings
 import chain_tenants
+import choon_auth
 
 log = logging.getLogger("chain_commands")
 
@@ -127,18 +128,42 @@ def _leaf_commands(group):
             yield cmd
 
 
-def _is_lead(interaction: discord.Interaction, lead_role_id: int) -> bool:
-    """Leadership gate. ⚠️ Advisory only — see the note in register()."""
-    if lead_role_id == 0:
-        return True
-    member = interaction.user
-    return isinstance(member, discord.Member) and any(r.id == lead_role_id for r in member.roles)
+async def _refuse(interaction: discord.Interaction, why: str) -> None:
+    await interaction.response.send_message(why, ephemeral=True)
+
+
+async def _may_manage(interaction: discord.Interaction, slug: str) -> bool:
+    """
+    Gate a write on ONE faction (#825). Replies with the reason and returns
+    False when refused.
+
+    ⚠️ Keyed on `slug` — the faction being ACTED ON — never on where the command
+    was typed. A forge councillor standing in a forge channel running
+    `/chain channel faction:tnl` is refused here.
+    """
+    ok, why = choon_auth.may_manage(interaction, slug)
+    if not ok:
+        await _refuse(interaction, why or "Not allowed.")
+    return ok
+
+
+async def _may_read(interaction: discord.Interaction, slug: str) -> bool:
+    """Gate a read on one faction — guild-scoped, no role needed."""
+    ok, why = choon_auth.may_read(interaction, slug)
+    if not ok:
+        await _refuse(interaction, why or "Not allowed.")
+    return ok
 
 
 def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] = None,
              lead_role_id: int = 0, on_change=None, sender=None) -> None:
     """
     Attach the /chain command group.
+
+    ⚠️ `lead_role_id` no longer gates anything (#825). Authority is per faction
+    now, in `choon_auth`, keyed on the slug being acted on. The parameter is kept
+    only so `chain_runtime` can hand the old global role to
+    `adopt_legacy_lead_role` once, and it should go with the variable.
 
     `on_change` is called after any successful write so the running bot can
     re-draw immediately rather than waiting out its refresh interval — a setting
@@ -167,6 +192,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_read(interaction, slug):
             return
         values = chain_settings.all_settings(slug)
         lines = []
@@ -204,13 +231,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                            faction="Which faction (optional when only one is configured)")
     async def set_cmd(interaction: discord.Interaction, key: str, value: str,
                       faction: Optional[str] = None) -> None:
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
-            return
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_manage(interaction, slug):
             return
         ok, message = chain_settings.set_value(slug, key, value)
         await interaction.response.send_message(message, ephemeral=True)
@@ -222,13 +247,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                            faction="Which faction (optional when only one is configured)")
     async def reset_cmd(interaction: discord.Interaction, key: str,
                         faction: Optional[str] = None) -> None:
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
-            return
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_manage(interaction, slug):
             return
         ok, message = chain_settings.reset(slug, key)
         await interaction.response.send_message(message, ephemeral=True)
@@ -261,10 +284,15 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
 
     @tenant.command(name="list", description="Factions configured, and whether each can be polled")
     async def tenant_list(interaction: discord.Interaction) -> None:
-        tenants = chain_tenants.all_tenants()
+        # ⚠️ Narrowed to what the caller may read (#825). The full list of
+        # configured factions, with each one's dashboard URL, is not something
+        # every member of every server should get for free.
+        visible = set(choon_auth.readable_slugs(interaction))
+        tenants = [t for t in chain_tenants.all_tenants() if t.slug in visible]
         if not tenants:
             await interaction.response.send_message(
-                "No factions configured. Add one with `/chain tenant add`.", ephemeral=True)
+                "No factions you can see here. Add one with `/chain tenant add`.",
+                ephemeral=True)
             return
         lines = []
         for t in tenants:
@@ -293,9 +321,18 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # visible to the client and land in logs; a tenant bearer pasted into a
         # channel is a leaked credential for that faction. It comes from the
         # environment — see chain_tenants.TOKEN_ENV.
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
+        # ⚠️ Creating a faction is ADMIN-ONLY, and editing one takes that
+        # faction's own manager check. Nobody can hold a manager role for a
+        # faction that does not exist yet, so a "manager" gate on creation would
+        # be a gate on nothing — anyone could add a tenant pointed at any
+        # dashboard and then manage it.
+        wanted = (slug or "").strip().lower()
+        if chain_tenants.get(wanted) is None:
+            if not choon_auth.is_admin(interaction.user.id):
+                await _refuse(interaction,
+                              "Adding a new faction is a bot-admin control.")
+                return
+        elif not await _may_manage(interaction, wanted):
             return
         # ⚠️ The guild is taken from WHERE THE COMMAND WAS RUN, not typed. A
         # mistyped guild id silently scopes the identity auto-match (#784) to
@@ -313,24 +350,88 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     @tenant.command(name="remove", description="Stop watching a faction")
     @app_commands.describe(slug="Which faction")
     async def tenant_remove(interaction: discord.Interaction, slug: str) -> None:
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
+        if not await _may_manage(interaction, (slug or "").strip().lower()):
             return
         ok, message = chain_tenants.remove(slug)
         await interaction.response.send_message(message, ephemeral=True)
         if ok and on_change:
             await on_change()
 
-    def _slug_choices(current: str):
+    @tenant.command(name="role",
+                    description="Which Discord roles may change a faction's settings")
+    @app_commands.describe(slug="Which faction", action="Add or remove the role",
+                           role="The role")
+    @app_commands.choices(action=[
+        app_commands.Choice(name="allow this role", value="add"),
+        app_commands.Choice(name="stop allowing this role", value="remove"),
+    ])
+    async def tenant_role(interaction: discord.Interaction, slug: str,
+                          action: app_commands.Choice[str],
+                          role: discord.Role) -> None:
+        """
+        ⚠️ **Bot-admin only, and that is the point.** Granting a role authority
+        over a faction is itself a privilege-granting act; letting a faction's
+        own managers extend the list would make the gate self-amending, so any
+        manager could hand it to anybody.
+
+        ⚠️ The bot-admin list stays in the environment and has NO command — see
+        `choon_auth.admin_ids`. An admin list editable by a command is only as
+        strong as the gate on that command, which is circular.
+        """
+        if not choon_auth.is_admin(interaction.user.id):
+            await _refuse(interaction, "Setting a faction's roles is a bot-admin control.")
+            return
+        wanted = (slug or "").strip().lower()
+        tenant_row = chain_tenants.get(wanted)
+        if tenant_row is None:
+            await _refuse(interaction, f"No faction called `{wanted}`.")
+            return
+        current = set(tenant_row.manager_role_ids)
+        if action.value == "add":
+            current.add(role.id)
+        else:
+            current.discard(role.id)
+        ok, result = chain_tenants.set_manager_roles(wanted, sorted(current))
+        if not ok:
+            await _refuse(interaction, str(result))
+            return
+        if result:
+            names = ", ".join(f"<@&{r}>" for r in result)
+            body = f"`{wanted}` can now be changed by: {names}."
+        else:
+            # ⚠️ Says what the empty case MEANS. "Roles cleared" reads as
+            # "anyone can now do this", which is the opposite of what happens.
+            body = (f"`{wanted}` has no manager roles, so only a bot admin can "
+                    f"change it.")
+        await interaction.response.send_message(body, ephemeral=True)
+
+    def _slug_choices(current: str, allowed=None):
+        """
+        ⚠️ Narrowed to what the caller may act on (#825). A picker that offers
+        factions somebody cannot touch teaches them their permissions by
+        refusing them, one keystroke at a time — and hands every member the full
+        list of configured factions for free.
+        """
         return [
             app_commands.Choice(name=t.slug, value=t.slug)
             for t in chain_tenants.all_tenants()
             if current.lower() in t.slug.lower()
+            and (allowed is None or t.slug in allowed)
         ][:25]
 
     async def _faction_autocomplete(interaction: discord.Interaction, current: str):
-        return _slug_choices(current)
+        """The READ picker — every faction the caller may look at."""
+        return _slug_choices(current, choon_auth.readable_slugs(interaction))
+
+    async def _managed_faction_autocomplete(interaction: discord.Interaction, current: str):
+        """
+        The WRITE picker — only factions the caller may change.
+
+        ⚠️ Separate from the read picker because they genuinely differ: several
+        factions can share one guild, where the read gate passes and the role
+        check does not.
+        """
+        return _slug_choices(current, choon_auth.manageable_slugs(interaction))
 
     # ── identity (#784) ──────────────────────────────────────────────────────
     #
@@ -343,9 +444,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     @app_commands.describe(user="The Discord user", torn_id="Their Torn player id")
     async def link_cmd(interaction: discord.Interaction, user: discord.User,
                        torn_id: str) -> None:
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
+        # ⚠️ Coarser than the rest ON PURPOSE — see choon_auth.may_manage_any.
+        # The Discord↔Torn map is bot-wide, so there is no slug to key on.
+        ok, why = choon_auth.may_manage_any(interaction)
+        if not ok:
+            await _refuse(interaction, why)
             return
         torn_id = (torn_id or "").strip()
         if not torn_id.isdigit():
@@ -366,9 +469,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     @chain.command(name="unlink", description="Forget who a Discord user is")
     @app_commands.describe(user="The Discord user")
     async def unlink_cmd(interaction: discord.Interaction, user: discord.User) -> None:
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
+        # ⚠️ Coarser than the rest ON PURPOSE — see choon_auth.may_manage_any.
+        # The Discord↔Torn map is bot-wide, so there is no slug to key on.
+        ok, why = choon_auth.may_manage_any(interaction)
+        if not ok:
+            await _refuse(interaction, why)
             return
         freed = chain_identity.unlink_discord(user.id)
         await interaction.response.send_message(
@@ -382,6 +487,8 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_read(interaction, slug):
             return
         summary = await _sync(slug, interaction.guild)
         if summary is None:
@@ -451,13 +558,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         nobody discovers. Reading `interaction.channel_id` works for a channel
         and a thread alike.
         """
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
-            return
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_manage(interaction, slug):
             return
 
         here = interaction.channel_id
@@ -584,13 +689,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         ⚠️ Flight warnings survive, as everywhere else: they record why a slot
         went uncovered, and that outlives the board.
         """
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
-            return
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_manage(interaction, slug):
             return
         await interaction.response.defer(ephemeral=True)
 
@@ -634,13 +737,11 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         bulk-delete channel history is one nobody can trust. The cutoff is
         yours, and it reports what it removed.
         """
-        if not _is_lead(interaction, lead_role_id):
-            await interaction.response.send_message(
-                "That is a leadership control.", ephemeral=True)
-            return
         slug, err = _resolve(faction)
         if err:
             await interaction.response.send_message(err, ephemeral=True)
+            return
+        if not await _may_manage(interaction, slug):
             return
         if hours < 1:
             # ⚠️ A floor, not a clamp to zero. `hours=0` would delete the ping
@@ -773,11 +874,16 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     # "tenant add" — the group is not attached to the tree until the line
     # below, so a comparison against "chain tenant add" matches nothing and
     # the exception silently does not apply. It did exactly that once.
+    # ⚠️ Which picker a command gets is decided BY IDENTITY, for the same reason
+    # `tenant add` is excluded by identity: at this point `qualified_name` is
+    # still the bare leaf name, so matching on strings silently does nothing.
+    _writes = {set_cmd, reset_cmd, channel_cmd, stop_cmd, tidy_cmd, tenant_remove}
     for cmd in _leaf_commands(chain):
         if cmd is tenant_add:
             continue
+        picker = _managed_faction_autocomplete if cmd in _writes else _faction_autocomplete
         for pname in ("faction", "slug"):
             if any(p.name == pname for p in cmd.parameters):
-                cmd.autocomplete(pname)(_faction_autocomplete)
+                cmd.autocomplete(pname)(picker)
 
     tree.add_command(chain, guild=guild)
