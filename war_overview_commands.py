@@ -13,6 +13,7 @@ Watch module, table, setting or token is touched, and War Overview is enabled by
 its own `WAR_OVERVIEW_TOKEN_*` independently of whether Chain Watch is on.
 """
 
+import asyncio
 import io
 import logging
 import os
@@ -179,7 +180,14 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # three seconds Discord allows before the interaction is dead.
         await interaction.response.defer()
 
-        payload = api.fetch(slug, war=war, mode=mode, member=member,
+        # ⚠️ OFF THE EVENT LOOP. `api.fetch` is blocking `requests` with a 30s
+        # timeout, and a coroutine that blocks stalls the WHOLE bot — gateway
+        # heartbeats included, which Discord eventually treats as a disconnect
+        # (#832). `chain_api.fetch` has done this since the start; this path did
+        # not. The timeout is right: it pulls a whole war's attacks. Running it
+        # on the loop is what was wrong.
+        payload = await asyncio.to_thread(
+                            api.fetch, slug, war=war, mode=mode, member=member,
                             warring_only="1" if warring_only else None,
                             # None means auto, which the endpoint reads as absent.
                             bin=bin_value,
@@ -209,8 +217,13 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # ⚠️ A chart that fails to draw must still leave the NUMBERS postable.
         # `render` returns None rather than raising for exactly that reason —
         # losing the summary because the picture failed is the worse trade.
-        png = None if summary_only else chart.render(payload.get("chart") or {},
-                                                     title=card["title"])
+        # ⚠️ Threaded for the same reason, and this one is not I/O: matplotlib
+        # is CPU-bound and takes about a second on a measured 70 KB render. It
+        # pays that on EVERY successful non-summary call rather than only when
+        # something is wrong, which makes it the most reliable staller of the
+        # four.
+        png = None if summary_only else await asyncio.to_thread(
+            chart.render, payload.get("chart") or {}, title=card["title"])
         if png:
             # ⚠️ `attachment://` binds the embed to the file in the SAME
             # message. A bare URL would not render, and a second message would
@@ -243,7 +256,9 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # would refuse leaks the war list — and the opponent names — anyway.
         if err or not choon_auth.may_read(interaction, slug)[0]:
             return []
-        payload = api.fetch(slug)
+        # ⚠️ Per KEYSTROKE. One person typing here against a degraded dashboard
+        # stalls the bot repeatedly, and has no idea they are doing it.
+        payload = await asyncio.to_thread(api.fetch, slug)
         if payload is None:
             return []
         return [app_commands.Choice(name=label, value=value)
@@ -257,7 +272,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         # ⚠️ Same reasoning as the war picker: this one lists member names.
         if not choon_auth.may_read(interaction, slug)[0]:
             return []
-        payload = api.fetch(slug, war=interaction.namespace.war)
+        payload = await asyncio.to_thread(api.fetch, slug, war=interaction.namespace.war)
         if payload is None:
             return []
         return [app_commands.Choice(name=label, value=value)
