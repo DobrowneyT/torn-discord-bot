@@ -269,3 +269,107 @@ class TestWarOverviewTokenSource:
                             lambda slug, field: seen.append(field) or "x")
         war_overview_api.token_for("forge")
         assert seen == ["war_overview_token"]
+
+
+class TestItDoesNotBlockTheEventLoop:
+    """
+    #832. A coroutine that blocks stalls the WHOLE bot — gateway heartbeats
+    included, which Discord eventually treats as a disconnect. So a slow
+    dashboard did not merely make `/rw overview` slow; it froze the Chain Watch
+    board and the OC watcher's button too.
+
+    ⚠️ These assert the work runs on ANOTHER THREAD, not that a particular
+    function was called. A shape assertion would pass against
+    `asyncio.to_thread` being removed and the call left in place, which is
+    precisely the regression worth catching.
+    """
+
+    def _interaction(self, **ns):
+        import threading
+
+        class R:
+            def __init__(s): s.sent = []
+            async def send_message(s, c=None, **k): s.sent.append(c or k)
+            async def defer(s, **k): pass
+        class F:
+            def __init__(s): s.sent = []
+            async def send(s, c=None, **k): s.sent.append(c or k)
+
+        i = type("I", (), {})()
+        i.guild_id = 111
+        i.user = type("M", (), {"id": 1, "roles": []})()
+        i.response = R()
+        i.followup = F()
+        i.namespace = type("N", (), ns)()
+        return i
+
+    def _tenant(self, tmp_path, monkeypatch):
+        import state
+        import chain_tenants
+        import choon_registry
+        monkeypatch.setattr(state, "STATE_PATH", str(tmp_path / "s.json"), raising=False)
+        monkeypatch.setattr(choon_registry, "token_for", lambda slug, field: "t" * 64)
+        chain_tenants._save([
+            chain_tenants.Tenant("forge", "https://f.x", 111, 1).to_dict()])
+
+    def test_the_command_fetches_off_the_loop(self, tmp_path, monkeypatch):
+        import asyncio, threading
+        import war_overview_api
+        self._tenant(tmp_path, monkeypatch)
+        main = threading.get_ident()
+        seen = {}
+
+        def fake_fetch(slug, **kw):
+            seen["thread"] = threading.get_ident()
+            return None  # short-circuits the handler; the thread is the point
+
+        monkeypatch.setattr(war_overview_api, "fetch", fake_fetch)
+        who = self._interaction(faction="forge", war="1")
+        asyncio.run(cmd().callback(
+            who, faction="forge", war="1",
+            type=app_commands.Choice(name="f", value="faction")))
+        assert seen["thread"] != main, "api.fetch ran on the event loop"
+
+    def test_the_war_picker_fetches_off_the_loop(self, tmp_path, monkeypatch):
+        # ⚠️ The autocompletes are the worse half — they fire per keystroke.
+        import asyncio, threading
+        import war_overview_api
+        self._tenant(tmp_path, monkeypatch)
+        main = threading.get_ident()
+        seen = {}
+        monkeypatch.setattr(war_overview_api, "fetch",
+                            lambda slug, **kw: seen.update(thread=threading.get_ident()))
+        cb = cmd()._params["war"].autocomplete
+        asyncio.run(cb(self._interaction(faction="forge"), ""))
+        assert seen["thread"] != main, "the war picker ran api.fetch on the event loop"
+
+    def test_the_member_picker_fetches_off_the_loop(self, tmp_path, monkeypatch):
+        import asyncio, threading
+        import war_overview_api
+        self._tenant(tmp_path, monkeypatch)
+        main = threading.get_ident()
+        seen = {}
+        monkeypatch.setattr(war_overview_api, "fetch",
+                            lambda slug, **kw: seen.update(thread=threading.get_ident()))
+        cb = cmd()._params["member"].autocomplete
+        asyncio.run(cb(self._interaction(faction="forge", war="1"), ""))
+        assert seen["thread"] != main, "the member picker ran api.fetch on the event loop"
+
+    def test_the_chart_renders_off_the_loop(self, tmp_path, monkeypatch):
+        # ⚠️ Not I/O — matplotlib is CPU-bound and pays ~1s on EVERY successful
+        # non-summary call, which makes it the most reliable staller of the four.
+        import asyncio, threading
+        import war_overview_api, war_overview_chart
+        self._tenant(tmp_path, monkeypatch)
+        main = threading.get_ident()
+        seen = {}
+        monkeypatch.setattr(war_overview_api, "fetch", lambda slug, **kw: {
+            "war": {}, "summary": {}, "mode": "faction", "chart": {"panels": []},
+            "bin": {"seconds": 3600, "auto": True}, "warring_only": True,
+        })
+        monkeypatch.setattr(war_overview_chart, "render",
+                            lambda chart, title=None: seen.update(thread=threading.get_ident()))
+        asyncio.run(cmd().callback(
+            self._interaction(faction="forge", war="1"), faction="forge", war="1",
+            type=app_commands.Choice(name="f", value="faction")))
+        assert seen["thread"] != main, "chart.render ran on the event loop"
