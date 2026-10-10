@@ -62,9 +62,11 @@ def score_line(p: Dict) -> str:
     pair whose difference is meaningless.
 
     ⚠️ The normalised figure caps bonus-chain hits at 10 respect, which is the
-    basis every payout is calculated on. Naming it is the point: a member who
-    landed the 25k hit sees a large raw number and a smaller payout one, and
-    that gap needs an explanation on the line rather than in a DM later.
+    basis every payout is calculated on. The DEDUCTION is named on the line —
+    a member who landed the 25k hit sees a large raw number and a smaller
+    payout one, and that gap needs accounting for — but the rule itself stays
+    here. "from bonus hits" is what a reader needs; "capped at 10" is what a
+    maintainer needs, and only one of them is reading the embed.
     """
     sc = p.get("score")
     if not sc:
@@ -78,7 +80,7 @@ def score_line(p: Dict) -> str:
     if bonus > 0:
         # Only when capping actually bit — "−0.00 from bonus hits" on every
         # ordinary row is noise that trains people to skip the line.
-        line += f" _(−{bonus:,.2f} from bonus hits capped at 10)_"
+        line += f" _(−{bonus:,.2f} from bonus hits)_"
     return line
 
 

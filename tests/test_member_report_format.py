@@ -25,13 +25,14 @@ class TestScoreLine:
     def test_names_the_cap_when_it_actually_bit(self):
         # ⚠️ A member who landed the 25k hit sees a big raw number and a smaller
         # payout one. The gap needs explaining on the line, not in a DM later.
-        assert "capped at 10" in fmt.score_line(mock.MEMBER_REPORT)
+        assert "from bonus hits" in fmt.score_line(mock.MEMBER_REPORT)
+        assert "188.25" in fmt.score_line(mock.MEMBER_REPORT)
 
     def test_stays_quiet_when_the_cap_changed_nothing(self):
         # "−0.00 from bonus hits" on every ordinary row trains people to skip
         # the line, which costs more than it says.
         p = {"score": {"raw": 500, "normalised": 500, "bonus": 0}}
-        assert "capped" not in fmt.score_line(p)
+        assert "bonus hits" not in fmt.score_line(p)
 
     def test_no_contribution_row_is_not_a_zero_score(self):
         # ⚠️ Having no row is a different fact from having scored nothing.
