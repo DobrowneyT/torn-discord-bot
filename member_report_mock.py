@@ -82,7 +82,18 @@ MEMBER_REPORT = {
     },
 
     # Pre-war stacks snapshot (#480), which the roll-call panel already joins.
-    "stacks": {"energy": 1000, "overdosed": False, "snapshot_at": 1_791_244_500},
+    # ⚠️ The REAL dashboard contract, not an invented one. `has_reading` is
+    # load-bearing: false means "we could not read their energy", and the
+    # dashboard then sends `energy: null`. A mock that omitted it is how this
+    # file's shape drifted from the endpoint's and shipped "0 energy" for a
+    # member who had 965.
+    "stacks": {
+        "energy": 1000,
+        "energy_max": 1000,
+        "has_reading": True,
+        "overdosed": False,
+        "captured_ms": 1_791_244_500_000,
+    },
 }
 
 # ⚠️ A SECOND fixture, because the interesting cases are the absences. A member
