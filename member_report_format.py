@@ -39,28 +39,33 @@ def _num(v: Any, default: float = 0.0) -> float:
         return default
 
 
+#: How a war type is shown in the header. ⚠️ Capitalised deliberately — it is a
+#: label on the war, not a sentence about it.
+WAR_TYPE_LABEL = {"real": "Real", "termed": "Termed", "race": "Race"}
+
+
 def war_title(p: Dict) -> str:
     """
-    Whose report this is, and which war.
+    Whose report this is, which war, and what kind of war it was.
 
-    ⚠️ **Termed is stated in the title**, because it changes how every number
-    below should be read: a termed war is an agreed result, so a low score is
-    not the same evidence it would be in a real one. MonChoon asked for it.
+    MonChoon's format: `MonChoon_616 — Romania Elite Kommando (Real)`.
 
-    ⚠️ `is_termed` is a HAND toggle on the dashboard's RW History page ("Set
-    Real" / "Set Termed"), defaulting to real. A termed war nobody toggled is
-    indistinguishable from a real one, so this reports the label, not a fact
-    about the war.
+    ⚠️ **The type comes from `war_type`, the War Room setting the leads pick**,
+    which has three values. The `is_termed` boolean cannot express `race` at
+    all, and an earlier version read it alone: a real war then rendered
+    identically to one nobody had labelled, which is the whole question the
+    marker exists to answer.
+
+    ⚠️ **No suffix at all when nobody set a type.** Three of forge's eleven
+    wars have no War Room note, and "(Real)" on one of those asserts a choice
+    nobody made — the same error in reverse.
     """
     w = p.get("war") or {}
     m = p.get("member") or {}
     name = m.get("name") or f"id {m.get('id')}"
     opp = w.get("opponent_name") or f"faction {w.get('opponent_id')}"
-    # ⚠️ **Stated either way, not only when termed.** "war vs X" gave no
-    # signal at all — MonChoon could not tell whether a real war was real or
-    # simply unlabelled, which is the whole question he wanted answered.
-    kind = "termed war" if w.get("is_termed") else "real war"
-    return f"{name} — {kind} vs {opp}"
+    label = WAR_TYPE_LABEL.get(w.get("war_type"))
+    return f"{name} — {opp} ({label})" if label else f"{name} — {opp}"
 
 
 def score_line(p: Dict) -> str:
@@ -251,7 +256,10 @@ def dibs_line(p: Dict) -> Optional[str]:
         # Theirs, they tried, it did not land. Still turned up.
         ("lost", ["attempted"]),
         # A teammate finished it. Not their failure, and worth seeing.
-        ("taken by us", ["taken_from"]),
+        # ⚠️ Just "taken". "taken by us" read as though the faction took it
+        # FROM somebody rather than a teammate landing the finishing hit,
+        # which is the opposite of what happened.
+        ("taken", ["taken_from"]),
         # ⚠️ THE accountability bucket: they held it and never swung.
         ("no swing", ["no_swing"]),
         # Their own choice to let it go — gave it back, or claimed elsewhere.

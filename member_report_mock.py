@@ -32,6 +32,7 @@ MEMBER_REPORT = {
         "our_score": 5412,
         "opponent_score": 4877,
         "is_termed": True,
+        "war_type": "termed",
         "won": True,
     },
     "member": {"id": 873341, "name": "Goosey"},
