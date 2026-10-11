@@ -133,7 +133,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         type="Faction-wide, or one member",
         member="Which member (required for type:member)",
         bins="Bar width for the chart — the page's Bin size (default: auto)",
-        warring_only="Count only the two warring factions (default: yes)",
+        warring_only="Count ONLY the two warring factions (default: no — everyone is counted)",
         summary_only="Skip the chart and post just the numbers",
     )
     @app_commands.choices(type=[
@@ -152,7 +152,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                           type: app_commands.Choice[str],
                           member: Optional[str] = None,
                           bins: Optional[str] = None,
-                          warring_only: bool = True,
+                          warring_only: bool = False,
                           summary_only: bool = False) -> None:
         slug, err = resolve(faction)
         if err:
