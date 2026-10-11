@@ -154,3 +154,193 @@ class TestWholeEmbed:
         out = fmt.build_member_report({})
         assert out["title"]
         assert out["description"]
+
+
+class TestTheDashboardContract:
+    """
+    ⚠️ **The tests that would have caught what shipped.**
+
+    Every other test in this file drives the MOCK. The mock was invented before
+    the endpoint existed, and two keys drifted: the dashboard sent the raw
+    column names `on_at_start`/`energy_current` while this formatter read
+    `responded`/`energy`. All 23 tests passed. In production a member who had
+    answered the roll call was published as "no answer recorded", and one with
+    965 energy as "0 energy", in their own permanent thread.
+
+    These fixtures are transcribed from `MemberRollCall` and `MemberStacks` in
+    `server/src/memberWarReport.ts`. If that interface changes, these must too —
+    which is the point: a visible place to break.
+    """
+
+    def payload(self, **over):
+        p = {
+            "war": {"id": 50549, "opponent_name": "Romania Elite Kommando",
+                    "opponent_id": 18569, "is_termed": False},
+            "member": {"id": 2250591, "name": "MonChoon_616"},
+            "score": {"raw": 1400.34, "normalised": 1400.34, "bonus_reduction": 0.0,
+                      "hits": 87, "bonus_hits": 0},
+            "summary": {"outgoing": {"attack": 87, "assist": 13, "loss": 23, "total": 123},
+                        "incoming": {"attack": 31, "assist": 28, "loss": 7, "total": 66},
+                        "revives": {"success": 20, "failure": 18, "total": 38}},
+            "dibs": {"state": "measured", "measured_ms": 1, "grace_seconds": 120,
+                     "counts": {"claims": 34, "converted": 25, "no_swing": 2,
+                                "taken_from": 2, "took_from_others": 1,
+                                "green_means_go": 0}},
+            "roll_call": {
+                "responded": True, "on_at_start": True, "availability": "on_time",
+                "can_self_hospital": None, "needs_merc": None, "revised": False,
+                "submitted_ms": 1_791_000_000_000, "first_action_offset_sec": 92,
+            },
+            "stacks": {
+                "energy": 965, "energy_max": 150, "has_reading": True,
+                "overdosed": False, "captured_ms": 1_791_000_000_000,
+            },
+        }
+        p.update(over)
+        return p
+
+    def test_a_member_who_answered_is_NOT_no_answer_recorded(self):
+        line = fmt.roll_call_line(self.payload())
+        assert "no answer recorded" not in line
+        assert "on at the start" in line
+
+    def test_real_energy_is_not_rendered_as_zero(self):
+        line = fmt.stacks_line(self.payload())
+        assert line is not None
+        assert "965" in line
+        assert "0 energy" not in line
+
+    def test_the_whole_embed_renders_the_real_payload(self):
+        d = desc(self.payload())
+        assert "no answer recorded" not in d
+        assert "0 energy" not in d
+        assert "965" in d
+
+    # ⚠️ has_reading, the field that distinguishes unknown from empty.
+    def test_unreadable_energy_is_not_printed_as_zero(self):
+        line = fmt.stacks_line(self.payload(
+            stacks={"energy": None, "energy_max": 150, "has_reading": False,
+                    "overdosed": False, "captured_ms": None}))
+        # Nothing measurable and nothing to flag: no line at all beats "0".
+        assert line is None
+
+    def test_an_OD_is_stated_even_when_energy_could_not_be_read(self):
+        line = fmt.stacks_line(self.payload(
+            stacks={"energy": None, "energy_max": 150, "has_reading": False,
+                    "overdosed": True, "captured_ms": None}))
+        assert "overdosed" in line
+        assert "not measured" in line
+
+    def test_an_OD_is_stated_beside_a_real_energy_reading(self):
+        line = fmt.stacks_line(self.payload(
+            stacks={"energy": 965, "energy_max": 150, "has_reading": True,
+                    "overdosed": True, "captured_ms": None}))
+        assert "965" in line and "overdosed" in line
+
+    def test_no_OD_is_omitted_entirely(self):
+        # MonChoon: "if they didnt we can omit it."
+        assert "overdos" not in fmt.stacks_line(self.payload())
+
+    # ⚠️ real vs termed, which changes how every number below should be read.
+    def test_a_real_war_is_titled_plainly(self):
+        assert fmt.war_title(self.payload()) == \
+            "MonChoon_616 — war vs Romania Elite Kommando"
+
+    def test_a_termed_war_says_so_in_the_title(self):
+        p = self.payload()
+        p["war"]["is_termed"] = True
+        assert "termed war vs" in fmt.war_title(p)
+
+    def test_a_missing_is_termed_reads_as_real_rather_than_crashing(self):
+        p = self.payload()
+        del p["war"]["is_termed"]
+        assert "termed" not in fmt.war_title(p)
+
+
+class TestTheDibsBucketsAddUp:
+    """
+    ⚠️ The eleven outcome buckets are mutually exclusive and exhaustive: they
+    SUM to `claims`. The dashboard's schema says so, because "a leaderboard
+    whose columns do not add up is one nobody can check".
+
+    The first version printed four of them beside two figures from a DIFFERENT
+    axis. A real row rendered as "34 claimed · 25 converted · 2 no swing · 2
+    taken from them · 1 taken from others" — 30, not 34, with 3 attempted and 2
+    released simply never shown. MonChoon caught it by doing the arithmetic.
+    """
+
+    REAL_ROW = {
+        "claims": 34, "converted": 25, "attempted": 3, "taken_from": 2,
+        "no_swing": 2, "outside": 0, "released": 2, "hopped": 0,
+        "overridden": 0, "board_reset": 0, "still_open": 0, "unknown": 0,
+        "swung": 29, "took_from_others": 1, "green_means_go": 0,
+    }
+
+    def line(self, **over):
+        row = dict(self.REAL_ROW)
+        row.update(over)
+        return fmt.dibs_line({"dibs": {"state": "measured", "counts": row}})
+
+    def test_the_real_row_that_shipped_wrong_now_adds_up(self):
+        line = self.line()
+        assert "34" in line and "=" in line
+        for n in ("25", "3", "2"):
+            assert n in line
+
+    def test_every_nonzero_bucket_appears(self):
+        # ⚠️ The bug was a SILENT omission, so this asserts presence by label.
+        line = self.line()
+        for label in ("converted", "swung and lost", "taken by a teammate",
+                      "no swing", "released"):
+            assert label in line, label
+
+    def test_zero_buckets_are_omitted(self):
+        line = self.line()
+        for label in ("hopped", "board reset", "unexplained", "died elsewhere"):
+            assert label not in line, label
+
+    def test_each_of_the_eleven_can_be_rendered(self):
+        # ⚠️ One at a time, so a bucket missing from the formatter's table is
+        # caught rather than hidden behind a more common one.
+        cases = {
+            "converted": "converted", "attempted": "swung and lost",
+            "taken_from": "taken by a teammate", "no_swing": "no swing",
+            "released": "released", "hopped": "hopped",
+            "overridden": "lead released", "outside": "died elsewhere",
+            "board_reset": "board reset", "still_open": "still held at the end",
+            "unknown": "unexplained",
+        }
+        for key, label in cases.items():
+            zeroed = {k: 0 for k in self.REAL_ROW}
+            zeroed["claims"] = 7
+            zeroed[key] = 7
+            line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
+            assert label in line, f"{key} is not rendered"
+            assert "=" in line, f"{key} does not audit"
+
+    def test_the_other_axis_is_on_its_OWN_line(self):
+        # ⚠️ `swung` overlaps converted/attempted and `took_from_others` is
+        # about claims that were never theirs. Mixing them into the same
+        # ·-separated run is exactly what made the sum look wrong.
+        line = self.line()
+        head, _, rest = line.partition("\n")
+        assert "taken from others" not in head
+        assert "taken from others" in rest and "swung at" in rest
+
+    def test_green_is_named_on_the_other_line_when_it_happened(self):
+        line = self.line(green_means_go=4)
+        assert "green (fair game)" in line.split("\n")[1]
+
+    def test_a_row_that_does_NOT_add_up_refuses_to_claim_it_does(self):
+        # ⚠️ A bucket this formatter does not know about. Printing "=" would
+        # assert an audit that does not hold.
+        line = self.line(claims=99)
+        assert "=" not in line
+        assert "of which" in line
+
+    def test_a_member_with_no_claims_but_who_took_one_still_appears(self):
+        zeroed = {k: 0 for k in self.REAL_ROW}
+        zeroed["took_from_others"] = 3
+        line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
+        assert "no claims" not in line
+        assert "3" in line

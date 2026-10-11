@@ -40,11 +40,24 @@ def _num(v: Any, default: float = 0.0) -> float:
 
 
 def war_title(p: Dict) -> str:
+    """
+    Whose report this is, and which war.
+
+    ⚠️ **Termed is stated in the title**, because it changes how every number
+    below should be read: a termed war is an agreed result, so a low score is
+    not the same evidence it would be in a real one. MonChoon asked for it.
+
+    ⚠️ `is_termed` is a HAND toggle on the dashboard's RW History page ("Set
+    Real" / "Set Termed"), defaulting to real. A termed war nobody toggled is
+    indistinguishable from a real one, so this reports the label, not a fact
+    about the war.
+    """
     w = p.get("war") or {}
     m = p.get("member") or {}
     name = m.get("name") or f"id {m.get('id')}"
     opp = w.get("opponent_name") or f"faction {w.get('opponent_id')}"
-    return f"{name} — war vs {opp}"
+    kind = "termed war" if w.get("is_termed") else "war"
+    return f"{name} — {kind} vs {opp}"
 
 
 def score_line(p: Dict) -> str:
@@ -185,31 +198,95 @@ def dibs_line(p: Dict) -> Optional[str]:
     if claims == 0 and _int(d.get("took_from_others")) == 0:
         return "🎯 **Dibs** · no claims"
 
-    bits = [f"**{claims:,}** claimed", f"**{_int(d.get('converted')):,}** converted"]
-    for key, label in (("no_swing", "no swing"), ("taken_from", "taken from them")):
-        n = _int(d.get(key))
-        if n:
-            bits.append(f"**{n:,}** {label}")
-    # ⚠️ Green is stated whenever it happened, because it is the line that
-    # EXPLAINS a claim that produced nothing — and the one somebody points at
-    # when they say their dibs was taken.
-    green = _int(d.get("green_means_go"))
-    if green:
-        bits.append(f"**{green:,}** green (fair game)")
+    # ⚠️ **These eleven are mutually exclusive and exhaustive: they SUM to
+    # `claims`.** The dashboard's schema says so explicitly — "a leaderboard
+    # whose columns do not add up is one nobody can check, which is the
+    # opposite of what a metric with members' names on it needs".
+    #
+    # The first version printed four of them beside two figures from a
+    # DIFFERENT axis, so a real row read "34 claimed · 25 converted · 2 no swing
+    # · 2 taken from them · 1 taken from others" — which adds to 30, and the
+    # missing 5 (3 attempted, 2 released) were simply never shown. MonChoon
+    # caught it by doing the arithmetic.
+    buckets = [
+        ("converted", "converted"),          # hit it and won
+        ("attempted", "swung and lost"),     # hit it and lost
+        ("taken_from", "taken by a teammate"),
+        ("no_swing", "no swing"),            # lapsed, nobody of ours swung
+        ("released", "released"),            # gave it back
+        ("hopped", "hopped"),                # claimed something else instead
+        ("overridden", "lead released"),
+        ("outside", "died elsewhere"),       # ⚠️ never anyone's failure
+        ("board_reset", "board reset"),      # ⚠️ never anyone's failure
+        ("still_open", "still held at the end"),
+        ("unknown", "unexplained"),          # ⚠️ visibly unexplained, not hidden
+    ]
+    shown = [(label, _int(d.get(key))) for key, label in buckets if _int(d.get(key))]
+    total = sum(n for _, n in shown)
+
+    parts = [f"**{claims:,}** claimed"]
+    if shown:
+        joined = " · ".join(f"**{n:,}** {label}" for label, n in shown)
+        # ⚠️ "=" only when it genuinely adds up. A mismatch means a bucket this
+        # formatter does not know about, and claiming an audit that does not
+        # hold is worse than not claiming one.
+        parts.append(("= " if total == claims else "· of which ") + joined)
+
+    line = "🎯 **Dibs** · " + " ".join(parts)
+
+    # ⚠️ A SECOND axis, on its own line. These do not belong in the sum above:
+    # "swung" overlaps converted/attempted, and the other two are about claims
+    # that were never this member's to begin with. Putting them in the same
+    # ·-separated run is precisely what made the first version look wrong.
+    other = []
+    swung = _int(d.get("swung"))
+    if swung:
+        other.append(f"**{swung:,}** swung at")
     took = _int(d.get("took_from_others"))
     if took:
-        bits.append(f"**{took:,}** taken from others")
-    return "🎯 **Dibs** · " + " · ".join(bits)
+        other.append(f"**{took:,}** taken from others")
+    # ⚠️ Green is stated whenever it happened, because it EXPLAINS a claim that
+    # produced nothing — and it is the line somebody points at when they say
+    # their dibs was taken.
+    green = _int(d.get("green_means_go"))
+    if green:
+        other.append(f"**{green:,}** green (fair game)")
+    if other:
+        line += "\n↳ also · " + " · ".join(other)
+    return line
 
 
 def stacks_line(p: Dict) -> Optional[str]:
-    """Pre-war readiness, when it was snapshotted. Omitted entirely when not."""
+    """
+    Pre-war readiness, when it was snapshotted.
+
+    ⚠️ **`has_reading` false is "we could not read it", NOT zero energy.** The
+    dashboard sends `energy: null` in that case, and printing `0 energy` reads
+    as "turned up on empty" — an accusation in somebody's permanent thread that
+    the data does not support. This went out wrong once: the payload sent
+    `energy_current`, this function looked for `energy`, and a member with 965
+    energy was published as having 0.
+
+    ⚠️ An OD is stated whenever it happened and omitted when it did not —
+    MonChoon: *"if they had an OD it would be nice to note that. I think if they
+    didnt we can omit it."* It is worth saying even when energy is unreadable,
+    which is why the no-reading branch still checks it.
+    """
     st = p.get("stacks")
     if not st:
         return None
+
+    od = st.get("overdosed")
+    if not st.get("has_reading"):
+        # Nothing measurable and nothing to flag: say nothing at all rather
+        # than spend a line on "we do not know".
+        if not od:
+            return None
+        return "⚡ **Pre-war** · ⚠️ **overdosed** · _(energy not measured)_"
+
     energy = _int(st.get("energy"))
-    od = " · ⚠️ **overdosed**" if st.get("overdosed") else ""
-    return f"⚡ **Pre-war** · {energy:,} energy{od}"
+    suffix = " · ⚠️ **overdosed**" if od else ""
+    return f"⚡ **Pre-war** · {energy:,} energy{suffix}"
 
 
 def build_member_report(p: Dict) -> Dict[str, Any]:

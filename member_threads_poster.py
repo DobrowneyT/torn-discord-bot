@@ -22,6 +22,7 @@ The thread lifecycle, and what each failure must do:
 """
 
 import asyncio
+import io
 import logging
 import re
 from typing import Any, Dict, Optional, Tuple
@@ -29,10 +30,42 @@ from typing import Any, Dict, Optional, Tuple
 import discord
 
 import member_report_format as fmt
+import war_overview_chart as chart
 import member_threads_api as api
 import rw_settings
 
 log = logging.getLogger("member_threads_poster")
+
+
+#: The attachment name the embed binds to. ⚠️ `attachment://` binds an embed to
+#: a file in the SAME message; a bare URL would not render, and a second message
+#: would separate the picture from the numbers it belongs to.
+CHART_FILENAME = "war-chart.png"
+
+
+async def _chart_file(facts: Dict[str, Any], title: str) -> Optional[discord.File]:
+    """
+    The member's own attack/revive timeline, as a PNG.
+
+    ⚠️ **Rendered off the event loop.** `chart.render` is matplotlib and
+    blocking; drawing ~95 of these inline would stall the gateway heartbeat and
+    get the bot disconnected mid-run — the same fault #44 fixed elsewhere.
+
+    ⚠️ **A chart that fails to draw must not stop the report.** The numbers are
+    the record; the picture is an aid. Returning None costs a graph, raising
+    would cost somebody their report.
+    """
+    spec = facts.get("chart")
+    if not spec:
+        return None
+    try:
+        png = await asyncio.to_thread(chart.render, spec, title=title)
+    except Exception as exc:                               # noqa: BLE001
+        log.warning("chart render failed for %s: %s", title, exc)
+        return None
+    if not png:
+        return None
+    return discord.File(io.BytesIO(png), filename=CHART_FILENAME)
 
 
 def _embed(spec: Dict[str, Any], war_id: Any) -> discord.Embed:
@@ -273,7 +306,11 @@ async def post_one(
         # one thing we must never do.
         return False, f"no report available for war {war_id} / member {member_id}"
 
-    embed = _embed(fmt.build_member_report(facts), war_id)
+    spec = fmt.build_member_report(facts)
+    embed = _embed(spec, war_id)
+    chart_file = await _chart_file(facts, spec["title"])
+    if chart_file is not None:
+        embed.set_image(url=f"attachment://{CHART_FILENAME}")
     registered = threads.get(member_id) or {}
     thread_id = registered.get("thread_id")
 
@@ -294,7 +331,11 @@ async def post_one(
             me = getattr(getattr(client, "user", None), "id", None)
             found = await _find_existing_post(thread, war_id, me)
             if found is not None:
-                await found.edit(embed=embed)
+                # ⚠️ `attachments=` REPLACES the set. Omitting it on an edit
+                # leaves the previous chart under the corrected numbers, which
+                # is worse than no chart: a picture that contradicts the figures
+                # beside it.
+                await found.edit(embed=embed, attachments=_files(chart_file))
                 api.mark_posted(slug, entry_id, message_id=found.id,
                                 thread_id=thread.id, channel_id=forum.id)
                 return True, (f"recovered and edited {found.id} in thread "
@@ -305,11 +346,11 @@ async def post_one(
             # correction. MonChoon: *"on a re-run for the same war I would edit
             # the post. on a new war I would append."*
             msg = await thread.fetch_message(int(existing_message))
-            await msg.edit(embed=embed)
+            await msg.edit(embed=embed, attachments=_files(chart_file))
             api.mark_posted(slug, entry_id, message_id=msg.id,
                             thread_id=thread.id, channel_id=forum.id)
             return True, f"edited {msg.id} in thread {thread.id}"
-        msg = await thread.send(embed=embed)
+        msg = await thread.send(embed=embed, **_kw(chart_file))
         api.mark_posted(slug, entry_id, message_id=msg.id,
                         thread_id=thread.id, channel_id=forum.id)
         return True, f"posted {msg.id} to thread {thread.id}"
@@ -319,12 +360,22 @@ async def post_one(
     # a display name before and Torn names change.
     name = payload.get("member_name") or facts.get("member", {}).get("name") or member_id
     title = f"{name} [{member_id}]"[:100]
-    created = await forum.create_thread(name=title, embed=embed)
+    created = await forum.create_thread(name=title, embed=embed, **_kw(chart_file))
     thread = created.thread
     msg = created.message
     api.mark_posted(slug, entry_id, message_id=msg.id,
                     thread_id=thread.id, channel_id=forum.id)
     return True, f"created thread {thread.id} and posted {msg.id}"
+
+
+def _kw(f: Optional[discord.File]) -> Dict[str, Any]:
+    """`file=` only when there is one — discord.py rejects `file=None`."""
+    return {"file": f} if f is not None else {}
+
+
+def _files(f: Optional[discord.File]):
+    """The replacement attachment set for an edit: the new chart, or none."""
+    return [f] if f is not None else []
 
 
 async def drain_once(client: discord.Client, slug: str) -> Dict[str, int]:
