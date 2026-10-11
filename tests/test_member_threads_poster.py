@@ -346,3 +346,182 @@ class TestPacing:
              patch.object(poster.asyncio, "sleep", AsyncMock()):
             counts = run(poster.drain_once(MagicMock(), "forge"))
         assert counts["claimed"] == poster.MAX_PER_TICK
+
+
+def embed_with_footer(text):
+    e = MagicMock()
+    e.footer = MagicMock()
+    e.footer.text = text
+    return e
+
+
+def history_of(*messages):
+    """An async-iterable thread history, which MagicMock does not give us."""
+    class _Hist:
+        def __init__(self, items):
+            self.items = items
+
+        def __call__(self, *a, **kw):
+            return self
+
+        def __aiter__(self):
+            async def gen():
+                for m in self.items:
+                    yield m
+            return gen()
+    return _Hist(list(messages))
+
+
+def our_post(mid, footer, author=7):
+    m = MagicMock(id=mid)
+    m.author = MagicMock(id=author)
+    m.embeds = [embed_with_footer(footer)]
+    m.edit = AsyncMock()
+    return m
+
+
+class TestRecoveringAPostWeNeverRecorded:
+    """
+    ⚠️ #946's second mechanism, and the window the first cannot cover: Discord
+    accepts the post and the write back to the dashboard fails. The entry has no
+    message id, so a naive retry adds a SECOND embed to somebody's permanent
+    thread. The footer carries the war id precisely so the thread can be asked.
+    """
+
+    def _client(self, uid=7):
+        c = MagicMock()
+        c.user = MagicMock(id=uid)
+        return c
+
+    def test_an_unrecorded_post_is_found_and_EDITED(self, forum, facts):
+        existing = our_post(900, "Same figures as the War Overview page · war 42")
+        thread = fake_thread()
+        thread.history = history_of(existing)
+        forum.guild.get_thread.return_value = thread
+
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted") as posted:
+            ok, detail = run(poster.post_one(
+                self._client(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+
+        assert ok and "recovered" in detail
+        existing.edit.assert_awaited_once()
+        # ⚠️ No second embed, and the id is recorded this time.
+        thread.send.assert_not_called()
+        assert posted.call_args.kwargs["message_id"] == 900
+
+    def test_a_thread_with_no_post_for_this_war_still_posts(self, forum, facts):
+        thread = fake_thread()
+        thread.history = history_of(our_post(900, "... · war 41"))
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            ok, detail = run(poster.post_one(
+                self._client(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        assert ok and "posted" in detail
+        thread.send.assert_awaited_once()
+
+    def test_war_42_does_NOT_match_war_420(self, forum, facts):
+        # ⚠️ Without a word boundary, a re-run of war 42 edits war 420's post —
+        # a permanent record rewritten to say something about the wrong war.
+        other = our_post(900, "... · war 420")
+        thread = fake_thread()
+        thread.history = history_of(other)
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            run(poster.post_one(
+                self._client(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        other.edit.assert_not_called()
+        thread.send.assert_awaited_once()
+
+    def test_somebody_elses_message_is_not_edited(self, forum, facts):
+        # A human quoting "war 42" in the thread must not be overwritten.
+        theirs = our_post(900, "talking about war 42", author=999)
+        thread = fake_thread()
+        thread.history = history_of(theirs)
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            run(poster.post_one(
+                self._client(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        theirs.edit.assert_not_called()
+        thread.send.assert_awaited_once()
+
+    def test_a_scan_we_could_not_do_REFUSES_rather_than_risking_a_duplicate(
+            self, forum, facts):
+        # ⚠️ "Could not check" must not be treated as "nothing is there". That
+        # is precisely how the duplicate this scan prevents gets created.
+        thread = fake_thread()
+
+        class _Boom:
+            def __call__(self, *a, **kw):
+                return self
+
+            def __aiter__(self):
+                async def gen():
+                    raise discord.HTTPException(MagicMock(status=500), "nope")
+                    yield  # pragma: no cover
+                return gen()
+
+        thread.history = _Boom()
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(discord.HTTPException):
+                run(poster.post_one(
+                    self._client(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        thread.send.assert_not_called()
+
+    def test_a_recorded_id_skips_the_scan_entirely(self, forum, facts):
+        # The cheap path stays cheap: 94 history fetches a run would be a real
+        # cost for a case that only arises after a failed write.
+        thread = fake_thread()
+        thread.fetch_message = AsyncMock(return_value=MagicMock(id=801, edit=AsyncMock()))
+        scanned = MagicMock()
+        thread.history = scanned
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            run(poster.post_one(self._client(), "forge", entry(message_id="801"),
+                                {"101": {"thread_id": 700}}, forum))
+        scanned.assert_not_called()
+
+
+class TestDrainingAWholeWar:
+    def test_the_cap_covers_a_full_roster_in_one_run(self):
+        # ⚠️ #946: "drains in one run". A Torn faction caps out around 100
+        # members; at 25 a war's reports trickled over four poll cycles, which
+        # is four times the chances of being interrupted.
+        assert poster.MAX_PER_TICK >= 100
+
+    def test_two_drains_for_one_faction_do_not_overlap(self, forum, facts):
+        # ⚠️ A full roster takes ~2.4 min and the loop ticks every 2. The claim
+        # window stops them posting the same entry, but they would interleave
+        # against Discord's rate limits and double the post rate the pacing
+        # exists to hold down.
+        poster._draining.add("forge")
+        try:
+            with patch.object(poster.api, "claim") as claim:
+                counts = run(poster.drain_once(MagicMock(), "forge"))
+        finally:
+            poster._draining.discard("forge")
+        claim.assert_not_called()
+        assert counts["skipped"] == 1
+
+    def test_the_guard_is_released_even_when_the_drain_raises(self):
+        # ⚠️ Otherwise one crash wedges this faction's reports until a restart.
+        with patch.object(poster, "_resolve_forum", AsyncMock(return_value=MagicMock())), \
+             patch.object(poster, "_drain", AsyncMock(side_effect=RuntimeError("boom"))):
+            with pytest.raises(RuntimeError):
+                run(poster.drain_once(MagicMock(), "forge"))
+        assert "forge" not in poster._draining
+
+    def test_a_different_faction_is_not_blocked(self, forum, facts):
+        poster._draining.add("tnl")
+        try:
+            with patch.object(poster, "_resolve_forum", AsyncMock(return_value=forum)), \
+                 patch.object(poster.api, "claim", return_value={"pending": [], "threads": {}}):
+                counts = run(poster.drain_once(MagicMock(), "forge"))
+        finally:
+            poster._draining.discard("tnl")
+        assert "skipped" not in counts

@@ -23,6 +23,7 @@ The thread lifecycle, and what each failure must do:
 
 import asyncio
 import logging
+import re
 from typing import Any, Dict, Optional, Tuple
 
 import discord
@@ -59,9 +60,25 @@ def _embed(spec: Dict[str, Any], war_id: Any) -> discord.Embed:
 #: time delays in there."*
 POST_DELAY_SECONDS = 1.5
 
-#: How many entries one tick will post. A cap rather than "everything waiting",
-#: so one tenant's backlog cannot monopolise the loop.
-MAX_PER_TICK = 25
+#: How many entries one tick will post.
+#:
+#: ⚠️ **Sized to drain a WHOLE war in one run** (#946). A Torn faction caps out
+#: around 100 members, so 150 covers any roster with headroom. The previous 25
+#: meant a war's reports trickled out over four poll cycles, which is not what
+#: "drains in one run" means and makes an interrupted run harder to reason
+#: about — four partial runs have four times the chances to be interrupted.
+#:
+#: Still a cap rather than "everything waiting": a runaway outbox should slow
+#: down, not post for an hour.
+MAX_PER_TICK = 150
+
+
+#: ⚠️ A drain of a full roster takes ~2.4 minutes at POST_DELAY_SECONDS, which
+#: is LONGER than the poll interval. Without this, the next tick starts while
+#: the last is still going. The claim window stops the two posting the same
+#: entry, but they would interleave against Discord's rate limits and double
+#: the effective post rate the pacing exists to hold down.
+_draining: set = set()
 
 
 class ThreadGone(Exception):
@@ -181,6 +198,55 @@ async def _existing_thread(
     return thread
 
 
+#: How far back a thread is scanned for an existing post. A member's thread
+#: holds one post per war plus the odd membership note, so a war from two years
+#: ago is still well inside this.
+HISTORY_SCAN = 50
+
+
+def _footer_names_war(message: discord.Message, war_id: Any) -> bool:
+    """
+    Is this one of our posts for THIS war?
+
+    ⚠️ Anchored with a word boundary, or `war 42` matches `war 420` and a
+    re-run of war 42 edits war 420's post — a permanent record rewritten to say
+    something about the wrong war.
+    """
+    for embed in message.embeds or []:
+        text = (embed.footer.text if embed.footer else None) or ""
+        if re.search(rf"\bwar {re.escape(str(war_id))}\b", text):
+            return True
+    return False
+
+
+async def _find_existing_post(
+    thread: discord.Thread, war_id: Any, me: Optional[int],
+) -> Optional[discord.Message]:
+    """
+    Our existing post for this war in this thread, if there is one.
+
+    ⚠️ **The window the recorded message id cannot cover** (#946): Discord
+    accepts a post and the write back to the dashboard fails. The entry stays
+    unposted with no message id, and a naive retry adds a SECOND embed to
+    somebody's permanent thread. The footer carries the war id precisely so the
+    thread itself can be asked.
+    """
+    try:
+        async for message in thread.history(limit=HISTORY_SCAN):
+            if me is not None and message.author.id != me:
+                continue
+            if _footer_names_war(message, war_id):
+                return message
+    except discord.HTTPException as exc:
+        # ⚠️ Not fatal, and NOT treated as "no post exists" — that would be the
+        # duplicate this function prevents. The caller is told nothing was
+        # found; what it does about that is its decision, and it refuses.
+        log.warning("could not scan thread %s for an existing war-%s post: %s",
+                    thread.id, war_id, exc)
+        raise
+    return None
+
+
 async def post_one(
     client: discord.Client, slug: str, entry: Dict[str, Any],
     threads: Dict[str, Any], forum: discord.ForumChannel,
@@ -218,6 +284,22 @@ async def post_one(
         # while keeping the message id it recorded. Its presence is the whole
         # signal that this is a correction rather than a first post.
         existing_message = entry.get("message_id")
+
+        if not existing_message:
+            # ⚠️ **Ask the THREAD before posting** (#946). The recorded id
+            # covers an interrupted run; it cannot cover Discord accepting a
+            # post and the write back to the dashboard failing afterwards. Then
+            # the entry has no id and a naive retry adds a second embed to a
+            # permanent thread. The footer carries the war id for exactly this.
+            me = getattr(getattr(client, "user", None), "id", None)
+            found = await _find_existing_post(thread, war_id, me)
+            if found is not None:
+                await found.edit(embed=embed)
+                api.mark_posted(slug, entry_id, message_id=found.id,
+                                thread_id=thread.id, channel_id=forum.id)
+                return True, (f"recovered and edited {found.id} in thread "
+                              f"{thread.id} (post existed, id was never recorded)")
+
         if existing_message:
             # ⚠️ EDIT, not a second post. A re-run of the same war is a
             # correction. MonChoon: *"on a re-run for the same war I would edit
@@ -251,6 +333,15 @@ async def drain_once(client: discord.Client, slug: str) -> Dict[str, int]:
 
     Returns counts, for the log line.
     """
+    # ⚠️ **Never two drains for one faction at once** (#946). A full roster
+    # takes ~2.4 minutes to post and the loop ticks every 2, so without this
+    # the next tick starts mid-drain. The claim window stops them posting the
+    # same entry, but they would interleave against Discord's rate limits and
+    # double the post rate the pacing exists to hold down.
+    if slug in _draining:
+        log.debug("%s: a drain is already running, skipping this tick", slug)
+        return {"claimed": 0, "posted": 0, "failed": 0, "skipped": 1}
+
     forum = await _resolve_forum(client, slug)
     if forum is None:
         # ⚠️ **Claim nothing.** Claiming and then failing every entry would burn
@@ -258,6 +349,17 @@ async def drain_once(client: discord.Client, slug: str) -> Dict[str, int]:
         # about our own configuration, on rows that are perfectly fine.
         return {"claimed": 0, "posted": 0, "failed": 0}
 
+    _draining.add(slug)
+    try:
+        return await _drain(client, slug, forum)
+    finally:
+        # ⚠️ `finally`, so a crash mid-drain does not wedge this faction's
+        # reports until the process restarts.
+        _draining.discard(slug)
+
+
+async def _drain(client: discord.Client, slug: str,
+                 forum: discord.ForumChannel) -> Dict[str, int]:
     data = await asyncio.to_thread(api.claim, slug)
     if data is None:
         return {"claimed": 0, "posted": 0, "failed": 0}
