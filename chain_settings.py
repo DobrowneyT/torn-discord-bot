@@ -73,19 +73,6 @@ SETTINGS: Dict[str, Setting] = {
                 "Where the standing board lives. It is edited in place, never re-posted."),
         Setting("ping_channel_id", 0, "channel",
                 "Where shift pings go. Falls back to the board channel when unset."),
-        # ⚠️ #943 — the FORUM that holds one thread per member. A setting here
-        # rather than on the dashboard for the reason this file's header gives:
-        # which channel things land in is the bot's business, and a second
-        # authoritative copy of a channel id is the one that drifts.
-        #
-        # ⚠️ **Unset is a refusal, not a default.** There is no sensible
-        # fallback: posting a member's permanent performance record into the
-        # board channel, or into the first forum the bot can see, would publish
-        # roll-call and dibs data to an audience nobody chose. Member reports
-        # simply do not run until this is set.
-        Setting("member_thread_forum_id", 0, "channel",
-                "Forum channel holding one thread per member for post-war reports. "
-                "Unset means member reports do not post at all — there is no fallback."),
         Setting("board_refresh_seconds", 300, "int",
                 "How often the board is re-drawn.", lo=60, hi=3600),
         Setting("board_hours_shown", 24, "int",

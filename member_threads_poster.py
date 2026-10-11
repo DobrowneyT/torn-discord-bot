@@ -27,9 +27,9 @@ from typing import Any, Dict, Optional, Tuple
 
 import discord
 
-import chain_settings
 import member_report_format as fmt
 import member_threads_api as api
+import rw_settings
 
 log = logging.getLogger("member_threads_poster")
 
@@ -68,8 +68,31 @@ class ThreadGone(Exception):
     """The registered thread no longer exists, or we cannot see it."""
 
 
+class ThreadMismatch(Exception):
+    """
+    The registered thread is no longer recognisably this member's.
+
+    ⚠️ A rename does NOT break the id lookup, so a renamed thread keeps working
+    and that is fine — a Torn name change should not stop somebody's reports.
+    What is NOT fine is a thread REPURPOSED for a different member: posting
+    member A's performance into a thread titled for member B writes a permanent,
+    named record about the wrong person, in a channel leadership reads.
+
+    The `[<member_id>]` suffix the thread is created with is what makes this
+    checkable, and tolerating any rename that KEEPS it is what keeps the check
+    from being a nuisance.
+    """
+
+
 def forum_id(slug: str) -> int:
-    return int(chain_settings.get(slug, "member_thread_forum_id") or 0)
+    """
+    Where this faction's member threads live, or 0.
+
+    ⚠️ From `rw_settings`, not `chain_settings` (#944). It is set with
+    `/rw config forum:…` — a ranked-war setting, not a Chain Watch tunable.
+    """
+    rw_settings.adopt_from_chain(slug)
+    return int(rw_settings.get(slug, "member_thread_forum_id") or 0)
 
 
 async def _resolve_forum(client: discord.Client, slug: str) -> Optional[discord.ForumChannel]:
@@ -98,14 +121,25 @@ async def _resolve_forum(client: discord.Client, slug: str) -> Optional[discord.
     return ch
 
 
+def _looks_like(thread: discord.Thread, member_id: str) -> bool:
+    """
+    Is this still recognisably that member's thread?
+
+    ⚠️ Tolerant of renames that keep the id, because a Torn name change is a
+    legitimate reason to rename and must not stop reports. Intolerant of one
+    that drops or changes it — see ThreadMismatch.
+    """
+    return f"[{member_id}]" in (thread.name or "")
+
+
 async def _existing_thread(
-    forum: discord.ForumChannel, thread_id: int,
+    forum: discord.ForumChannel, thread_id: int, member_id: str,
 ) -> discord.Thread:
     """
     The registered thread, unarchived if need be.
 
-    ⚠️ Raises ThreadGone rather than returning None, so a caller cannot treat a
-    deleted thread as "nothing to do".
+    ⚠️ Raises rather than returning None, so a caller cannot treat a deleted or
+    repurposed thread as "nothing to do".
     """
     thread = forum.guild.get_thread(thread_id)
     if thread is None:
@@ -125,6 +159,25 @@ async def _existing_thread(
             raise ThreadGone(
                 f"thread {thread_id} is archived and I cannot unarchive it "
                 f"(needs Manage Threads): {exc}") from exc
+
+    # ⚠️ Checked AFTER unarchiving, so an archived-and-fine thread is not
+    # reported as a mismatch, and BEFORE posting, which is the only point at
+    # which it still matters.
+    if not _looks_like(thread, member_id):
+        raise ThreadMismatch(
+            f"thread {thread_id} is named {thread.name!r}, which no longer "
+            f"carries [{member_id}] — refusing to post member {member_id}'s "
+            f"report into it")
+
+    # ⚠️ A thread that has been MOVED to another channel is also a mismatch.
+    # Its id still resolves, so posting would succeed — into a forum nobody
+    # chose, publishing roll-call and dibs data to an unintended audience.
+    parent_id = getattr(thread, "parent_id", None)
+    if parent_id is not None and int(parent_id) != int(forum.id):
+        raise ThreadMismatch(
+            f"thread {thread_id} now lives in channel {parent_id}, not the "
+            f"configured forum {forum.id} — refusing to post there")
+
     return thread
 
 
@@ -159,7 +212,7 @@ async def post_one(
     thread_id = registered.get("thread_id")
 
     if thread_id:
-        thread = await _existing_thread(forum, int(thread_id))
+        thread = await _existing_thread(forum, int(thread_id), member_id)
         # ⚠️ **From the ENTRY, not the registry.** The dashboard keeps one
         # outbox row per (member, kind, war), and a re-queue re-opens that row
         # while keeping the message id it recorded. Its presence is the whole
@@ -224,6 +277,15 @@ async def drain_once(client: discord.Client, slug: str) -> Dict[str, int]:
             log.error("%s: member %s's thread is gone — NOT recreating it. %s",
                       slug, entry.get("member_id"), exc)
             api.mark_failed(slug, entry_id, f"thread gone: {exc}")
+            counts["failed"] += 1
+        except ThreadMismatch as exc:
+            # ⚠️ Also loud, also never recreated, and NAMED. This one means
+            # somebody has edited the forum by hand, so the person who needs to
+            # see it is a human, not a retry.
+            log.error("%s: member %s's registered thread is not theirs any "
+                      "more — NOT posting and NOT recreating. %s",
+                      slug, entry.get("member_id"), exc)
+            api.mark_failed(slug, entry_id, f"thread mismatch: {exc}")
             counts["failed"] += 1
         except discord.HTTPException as exc:
             log.warning("%s: posting entry %s failed: %s", slug, entry_id, exc)

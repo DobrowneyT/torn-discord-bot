@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import chain_settings  # noqa: E402
+import rw_settings  # noqa: E402
 import member_threads_poster as poster  # noqa: E402
 
 
@@ -48,6 +48,20 @@ def facts():
     }
 
 
+def fake_thread(tid=700, *, archived=False, member_id="101", parent=555, name=None):
+    """
+    ⚠️ `name` must be set as an ATTRIBUTE, not a MagicMock kwarg — `name` is
+    consumed by the mock's own constructor, so `MagicMock(name="x")` names the
+    mock and leaves `.name` a child mock. That is what made the first version of
+    these fixtures fail the identity check.
+    """
+    t = MagicMock(id=tid, archived=archived, parent_id=parent)
+    t.name = name if name is not None else f"Someone [{member_id}]"
+    t.send = AsyncMock(return_value=MagicMock(id=801))
+    t.edit = AsyncMock()
+    return t
+
+
 def entry(**over):
     e = {"id": 1, "member_id": "101", "kind": "war_report",
          "payload": {"war_id": 42, "member_name": "Someone"}}
@@ -71,11 +85,17 @@ class TestTheForumGate:
         # member's "running log" would be one flat stream in a shared channel.
         client = MagicMock()
         client.get_channel.return_value = MagicMock(spec=discord.TextChannel)
-        with patch.object(chain_settings, "get", return_value=999):
+        # ⚠️ Patched on `rw_settings`, which is what the poster reads since
+        # #944. Patching `chain_settings` here left this test passing for the
+        # wrong reason: the real unset value short-circuited before the type
+        # check it claims to exercise ever ran.
+        with patch.object(rw_settings, "get", return_value=999), \
+             patch.object(rw_settings, "adopt_from_chain", return_value=False):
             assert run(poster._resolve_forum(client, "forge")) is None
 
     def test_unset_is_zero_not_a_fallback(self):
-        with patch.object(chain_settings, "get", return_value=0):
+        with patch.object(rw_settings, "get", return_value=0), \
+             patch.object(rw_settings, "adopt_from_chain", return_value=False):
             assert poster.forum_id("forge") == 0
             assert run(poster._resolve_forum(MagicMock(), "forge")) is None
 
@@ -110,6 +130,100 @@ class TestADeletedThread:
         forum.create_thread.assert_not_called()
 
 
+class TestARepurposedThread:
+    """
+    ⚠️ #944's "renamed" case, and the reasoning that makes it a rule.
+
+    A rename does not break the id lookup, so a renamed thread keeps working —
+    and it must, because a Torn name change is a legitimate reason to rename
+    one. What must NOT happen is posting member A's performance into a thread
+    somebody has repurposed for member B: that is a permanent, named record
+    about the wrong person, in a channel leadership reads.
+    """
+
+    def test_a_rename_that_keeps_the_id_is_fine(self, forum, facts):
+        forum.guild.get_thread.return_value = fake_thread(name="NewTornName [101]")
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            ok, _ = run(poster.post_one(
+                MagicMock(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        assert ok
+
+    def test_a_rename_that_DROPS_the_id_is_refused(self, forum, facts):
+        thread = fake_thread(name="old stuff - reuse me")
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(poster.ThreadMismatch, match="101"):
+                run(poster.post_one(
+                    MagicMock(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        thread.send.assert_not_called()
+        forum.create_thread.assert_not_called()
+
+    def test_a_thread_repurposed_for_ANOTHER_member_is_refused(self, forum, facts):
+        # The failure this whole check exists for.
+        forum.guild.get_thread.return_value = fake_thread(name="SomebodyElse [999]")
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(poster.ThreadMismatch):
+                run(poster.post_one(
+                    MagicMock(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+
+    def test_a_thread_MOVED_to_another_channel_is_refused(self, forum, facts):
+        # ⚠️ Its id still resolves, so posting would SUCCEED — into a forum
+        # nobody chose, publishing roll-call and dibs data to an unintended
+        # audience.
+        forum.guild.get_thread.return_value = fake_thread(parent=999)
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(poster.ThreadMismatch, match="999"):
+                run(poster.post_one(
+                    MagicMock(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+
+    def test_the_identity_check_runs_AFTER_unarchiving(self, forum, facts):
+        # Otherwise an archived-but-perfectly-fine thread reads as a mismatch.
+        thread = fake_thread(archived=True)
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            ok, _ = run(poster.post_one(
+                MagicMock(), "forge", entry(), {"101": {"thread_id": 700}}, forum))
+        assert ok
+        thread.edit.assert_awaited_once_with(archived=False)
+
+    def test_drain_reports_it_loudly_and_does_not_recreate(self, forum, facts):
+        forum.guild.get_thread.return_value = fake_thread(name="repurposed")
+        with patch.object(poster, "_resolve_forum", AsyncMock(return_value=forum)), \
+             patch.object(poster.api, "claim", return_value={
+                 "pending": [entry()], "threads": {"101": {"thread_id": 700}}}), \
+             patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_failed") as failed, \
+             patch.object(poster.log, "error") as errored:
+            counts = run(poster.drain_once(MagicMock(), "forge"))
+        assert counts["failed"] == 1 and counts["posted"] == 0
+        assert "thread mismatch" in failed.call_args[0][2]
+        errored.assert_called_once()
+        forum.create_thread.assert_not_called()
+
+    def test_one_mismatch_does_not_abort_the_rest_of_the_run(self, forum, facts):
+        # ⚠️ #944's last criterion. The broken member is in the MIDDLE, because
+        # a run that stops at the first problem would still pass a test where
+        # the problem is last.
+        good, bad = fake_thread(701, member_id="100"), fake_thread(702, name="repurposed")
+        third = fake_thread(703, member_id="102")
+        forum.guild.get_thread.side_effect = lambda tid: {701: good, 702: bad, 703: third}[tid]
+        pending = [entry(id=1, member_id="100"), entry(id=2, member_id="101"),
+                   entry(id=3, member_id="102")]
+        registry = {"100": {"thread_id": 701}, "101": {"thread_id": 702},
+                    "102": {"thread_id": 703}}
+        with patch.object(poster, "_resolve_forum", AsyncMock(return_value=forum)), \
+             patch.object(poster.api, "claim", return_value={
+                 "pending": pending, "threads": registry}), \
+             patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"), \
+             patch.object(poster.api, "mark_failed"), \
+             patch.object(poster.asyncio, "sleep", AsyncMock()):
+            counts = run(poster.drain_once(MagicMock(), "forge"))
+        assert counts == {"claimed": 3, "posted": 2, "failed": 1}
+
+
 class TestPostingAndEditing:
     def test_a_member_with_no_thread_gets_one_created(self, forum, facts):
         with patch.object(poster.api, "report", return_value=facts), \
@@ -131,8 +245,7 @@ class TestPostingAndEditing:
         assert "[101]" in forum.create_thread.call_args.kwargs["name"]
 
     def test_an_existing_thread_is_appended_to(self, forum, facts):
-        thread = MagicMock(id=700, archived=False)
-        thread.send = AsyncMock(return_value=MagicMock(id=801))
+        thread = fake_thread()
         forum.guild.get_thread.return_value = thread
         with patch.object(poster.api, "report", return_value=facts), \
              patch.object(poster.api, "mark_posted"):
@@ -147,7 +260,7 @@ class TestPostingAndEditing:
         # failure this prevents.
         msg = MagicMock(id=801)
         msg.edit = AsyncMock()
-        thread = MagicMock(id=700, archived=False)
+        thread = fake_thread()
         thread.send = AsyncMock()
         thread.fetch_message = AsyncMock(return_value=msg)
         forum.guild.get_thread.return_value = thread
@@ -166,8 +279,7 @@ class TestPostingAndEditing:
     def test_an_archived_thread_is_unarchived_first(self, forum, facts):
         # Forums archive quiet threads; we post at least once a war, so this is
         # routine rather than exceptional.
-        thread = MagicMock(id=700, archived=True)
-        thread.edit = AsyncMock()
+        thread = fake_thread(archived=True)
         thread.send = AsyncMock(return_value=MagicMock(id=802))
         forum.guild.get_thread.return_value = thread
         with patch.object(poster.api, "report", return_value=facts), \
@@ -178,7 +290,7 @@ class TestPostingAndEditing:
         thread.edit.assert_awaited_once_with(archived=False)
 
     def test_an_archived_thread_we_cannot_unarchive_fails_loudly(self, forum, facts):
-        thread = MagicMock(id=700, archived=True)
+        thread = fake_thread(archived=True)
         thread.edit = AsyncMock(
             side_effect=discord.Forbidden(MagicMock(status=403), "no Manage Threads"))
         forum.guild.get_thread.return_value = thread

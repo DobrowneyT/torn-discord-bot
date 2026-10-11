@@ -14,6 +14,7 @@ import pytest
 
 import chain_commands
 import choon_commands
+import war_overview_commands
 import chain_tenants
 import choon_auth
 
@@ -68,6 +69,10 @@ def leaves():
     # ⚠️ Both roots: the faction commands moved to /choon in #826, and a
     # walker that registers only /chain would report them as missing.
     choon_commands.register(tree)
+    # ⚠️ And /rw, whose `config` writes where permanent per-member performance
+    # records get published (#944). A write command absent from this walker is
+    # a write command with no gating test.
+    war_overview_commands.register(tree)
     out = {}
     for cmd in tree.get_commands():
         for sub in getattr(cmd, "commands", []):
@@ -109,6 +114,9 @@ def body(sent):
 
 WRITE_COMMANDS = [
     ("chain stop", {}),
+    # ⚠️ Decides where member war reports are published. `may_read` here would
+    # let any member of the server redirect a permanent record.
+    ("rw config", {}),
     ("chain tidy", {"hours": 24}),
     ("chain set", {"key": "slots_per_hour", "value": "2"}),
     ("chain reset", {"key": "slots_per_hour"}),
@@ -134,10 +142,22 @@ def test_the_same_councillor_can_write_to_their_own(name, extra):
     assert "needs one of these roles" not in body(sent), name
 
 
-def test_a_member_with_no_roles_cannot_write_to_their_own_faction():
+@pytest.mark.parametrize("name,extra", WRITE_COMMANDS)
+def test_a_member_with_no_roles_cannot_write_to_their_own_faction(name, extra):
+    """
+    ⚠️ **THE test that tells `may_manage` from `may_read`**, and it was pinned to
+    one command. Every other case here uses a councillor from ANOTHER faction,
+    whom both gates refuse for being in the wrong guild — so a handler
+    accidentally using `may_read` passed the whole file. Probed on #944: with
+    this hardcoded to "chain stop", downgrading `/rw config` to `may_read` kept
+    all 26 tests green.
+
+    A member in their own faction's guild with no manager role is the one caller
+    the two gates disagree about: `may_read` lets them in, `may_manage` does not.
+    """
     who = FakeInteraction(uid=3, guild_id=FORGE_GUILD, roles=())
-    sent = run(leaves()["chain stop"], who, faction="forge")
-    assert str(FORGE_ROLE) in body(sent)
+    sent = run(leaves()[name], who, faction="forge", **extra)
+    assert str(FORGE_ROLE) in body(sent), name
 
 
 def test_a_bot_admin_writes_to_any_faction():
