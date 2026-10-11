@@ -525,3 +525,105 @@ class TestDrainingAWholeWar:
         finally:
             poster._draining.discard("tnl")
         assert "skipped" not in counts
+
+
+class TestADeletedMessageIsRePosted:
+    """
+    ⚠️ The OPPOSITE case to a deleted thread, and the reasoning is what makes
+    them different rather than contradictory.
+
+    Deleting a THREAD destroys a member's whole running log, and silently
+    making a fresh one hides that the history is gone — so that fails loudly
+    and never recreates.
+
+    Deleting one MESSAGE removes one war's report from a log that is otherwise
+    intact. Re-posting restores exactly what was lost, so it is the right
+    answer. Without it the entry 404s on every tick for ever: the recorded id
+    points at nothing, so the edit can never succeed.
+
+    Found in production — MonChoon deleted a post expecting it to come back,
+    and instead got `404 ... (error code: 10008): Unknown Message` on a loop.
+    """
+
+    def _client(self, uid=7):
+        c = MagicMock()
+        c.user = MagicMock(id=uid)
+        return c
+
+    def _gone(self):
+        return discord.NotFound(MagicMock(status=404), "Unknown Message")
+
+    def test_a_deleted_post_is_re_posted_into_the_SAME_thread(self, forum, facts):
+        thread = fake_thread()
+        thread.fetch_message = AsyncMock(side_effect=self._gone())
+        thread.history = history_of()          # nothing to recover
+        forum.guild.get_thread.return_value = thread
+
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted") as posted:
+            ok, detail = run(poster.post_one(
+                self._client(), "forge", entry(message_id="999"),
+                {"101": {"thread_id": 700}}, forum))
+
+        assert ok and "posted" in detail
+        thread.send.assert_awaited_once()
+        # ⚠️ The THREAD is reused — only the message is replaced. A new thread
+        # here would split the member's history, which is the thing we refuse.
+        forum.create_thread.assert_not_called()
+        # The new id is recorded, so the next run edits rather than re-posting.
+        assert posted.call_args.kwargs["message_id"] == 801
+
+    def test_it_does_not_loop_forever_failing(self, forum, facts):
+        # The production symptom: "0 posted, 1 failed" on every tick.
+        thread = fake_thread()
+        thread.fetch_message = AsyncMock(side_effect=self._gone())
+        thread.history = history_of()
+        forum.guild.get_thread.return_value = thread
+
+        with patch.object(poster, "_resolve_forum", AsyncMock(return_value=forum)), \
+             patch.object(poster.api, "claim", return_value={
+                 "pending": [entry(message_id="999")],
+                 "threads": {"101": {"thread_id": 700}}}), \
+             patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"), \
+             patch.object(poster.api, "mark_failed") as failed:
+            counts = run(poster.drain_once(MagicMock(), "forge"))
+
+        assert counts == {"claimed": 1, "posted": 1, "failed": 0}
+        failed.assert_not_called()
+
+    def test_a_deleted_id_still_prefers_an_existing_post_it_finds(self, forum, facts):
+        # ⚠️ The recorded id is gone, but a post for this war is in the thread —
+        # the write-back must have failed after a later re-post. Edit that one
+        # rather than adding a third.
+        survivor = our_post(900, "... · war 42")
+        thread = fake_thread()
+        thread.fetch_message = AsyncMock(side_effect=self._gone())
+        thread.history = history_of(survivor)
+        forum.guild.get_thread.return_value = thread
+
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            ok, detail = run(poster.post_one(
+                self._client(), "forge", entry(message_id="999"),
+                {"101": {"thread_id": 700}}, forum))
+
+        assert ok and "recovered" in detail
+        survivor.edit.assert_awaited_once()
+        thread.send.assert_not_called()
+
+    def test_a_NON_404_error_still_fails_rather_than_duplicating(self, forum, facts):
+        # ⚠️ Only "Unknown Message" means deleted. A 403 or a 500 means the post
+        # may well still be there, and re-posting on those would duplicate a
+        # permanent record every time Discord has a bad minute.
+        thread = fake_thread()
+        thread.fetch_message = AsyncMock(
+            side_effect=discord.HTTPException(MagicMock(status=500), "server error"))
+        forum.guild.get_thread.return_value = thread
+
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(discord.HTTPException):
+                run(poster.post_one(
+                    self._client(), "forge", entry(message_id="999"),
+                    {"101": {"thread_id": 700}}, forum))
+        thread.send.assert_not_called()
