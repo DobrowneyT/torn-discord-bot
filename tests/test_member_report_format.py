@@ -287,27 +287,27 @@ class TestTheDibsBucketsAddUp:
         for n in ("25", "3", "2"):
             assert n in line
 
-    def test_every_nonzero_bucket_appears(self):
+    def test_every_nonzero_group_appears(self):
         # ⚠️ The bug was a SILENT omission, so this asserts presence by label.
         line = self.line()
-        for label in ("converted", "swung and lost", "taken by a teammate",
-                      "no swing", "released"):
+        for label in ("won", "lost", "taken by us", "no swing", "dropped"):
             assert label in line, label
 
-    def test_zero_buckets_are_omitted(self):
+    def test_zero_groups_are_omitted(self):
         line = self.line()
-        for label in ("hopped", "board reset", "unexplained", "died elsewhere"):
+        for label in ("void", "unexplained", "still held"):
             assert label not in line, label
 
     def test_each_of_the_eleven_can_be_rendered(self):
         # ⚠️ One at a time, so a bucket missing from the formatter's table is
-        # caught rather than hidden behind a more common one.
+        # caught rather than hidden behind a more common one. ELEVEN cases for
+        # eight groups: the grouping is where a column silently vanishes.
         cases = {
-            "converted": "converted", "attempted": "swung and lost",
-            "taken_from": "taken by a teammate", "no_swing": "no swing",
-            "released": "released", "hopped": "hopped",
-            "overridden": "lead released", "outside": "died elsewhere",
-            "board_reset": "board reset", "still_open": "still held at the end",
+            "converted": "won", "attempted": "lost",
+            "taken_from": "taken by us", "no_swing": "no swing",
+            "released": "dropped", "hopped": "dropped",
+            "overridden": "void", "outside": "void",
+            "board_reset": "void", "still_open": "still held",
             "unknown": "unexplained",
         }
         for key, label in cases.items():
@@ -344,3 +344,30 @@ class TestTheDibsBucketsAddUp:
         line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
         assert "no claims" not in line
         assert "3" in line
+
+
+    def test_a_lead_override_is_VOID_not_dropped(self):
+        # ⚠️ A lead taking a claim off somebody is not that member giving it
+        # up. Filing it under "dropped" reads as a choice they did not make.
+        zeroed = {k: 0 for k in self.REAL_ROW}
+        zeroed["claims"] = 1
+        zeroed["overridden"] = 1
+        line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
+        assert "void" in line and "dropped" not in line
+
+    def test_released_and_hopped_combine_into_one_dropped_figure(self):
+        zeroed = {k: 0 for k in self.REAL_ROW}
+        zeroed["claims"] = 5
+        zeroed["released"] = 2
+        zeroed["hopped"] = 3
+        line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
+        assert "**5** dropped" in line and "=" in line
+
+    def test_unexplained_is_never_folded_into_void(self):
+        # The schema is explicit: visibly unexplained rather than quietly
+        # bucketed. Hiding it would make a gap in the data look like a result.
+        zeroed = {k: 0 for k in self.REAL_ROW}
+        zeroed["claims"] = 2
+        zeroed["unknown"] = 2
+        line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
+        assert "unexplained" in line and "void" not in line

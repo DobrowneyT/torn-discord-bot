@@ -208,20 +208,43 @@ def dibs_line(p: Dict) -> Optional[str]:
     # · 2 taken from them · 1 taken from others" — which adds to 30, and the
     # missing 5 (3 attempted, 2 released) were simply never shown. MonChoon
     # caught it by doing the arithmetic.
-    buckets = [
-        ("converted", "converted"),          # hit it and won
-        ("attempted", "swung and lost"),     # hit it and lost
-        ("taken_from", "taken by a teammate"),
-        ("no_swing", "no swing"),            # lapsed, nobody of ours swung
-        ("released", "released"),            # gave it back
-        ("hopped", "hopped"),                # claimed something else instead
-        ("overridden", "lead released"),
-        ("outside", "died elsewhere"),       # ⚠️ never anyone's failure
-        ("board_reset", "board reset"),      # ⚠️ never anyone's failure
-        ("still_open", "still held at the end"),
-        ("unknown", "unexplained"),          # ⚠️ visibly unexplained, not hidden
+    # ⚠️ **These eleven are mutually exclusive and exhaustive: they SUM to
+    # `claims`.** The dashboard's schema says so explicitly — "a leaderboard
+    # whose columns do not add up is one nobody can check, which is the
+    # opposite of what a metric with members' names on it needs".
+    #
+    # ⚠️ **Grouped by WHOSE DOING IT WAS**, which is the only question a reader
+    # of somebody's performance thread is actually asking. Eleven raw outcomes
+    # made the line unreadable and put jargon in it — MonChoon had to ask what
+    # "hopped" meant, which is a fair question about a word in a permanent
+    # record with his members' names on it.
+    #
+    # ⚠️ `overridden` groups with "void", NOT with "dropped": a lead taking a
+    # claim off somebody is not that member giving it up, and filing it as
+    # theirs would read as a choice they did not make.
+    groups = [
+        # Theirs, and it went well.
+        ("won", ["converted"]),
+        # Theirs, they tried, it did not land. Still turned up.
+        ("lost", ["attempted"]),
+        # A teammate finished it. Not their failure, and worth seeing.
+        ("taken by us", ["taken_from"]),
+        # ⚠️ THE accountability bucket: they held it and never swung.
+        ("no swing", ["no_swing"]),
+        # Their own choice to let it go — gave it back, or claimed elsewhere.
+        ("dropped", ["released", "hopped"]),
+        # ⚠️ Nobody's failure: died elsewhere, board wiped, a lead released it.
+        ("void", ["outside", "board_reset", "overridden"]),
+        # Still theirs when the war ended.
+        ("still held", ["still_open"]),
+        # ⚠️ Visibly unexplained rather than quietly folded into "void".
+        ("unexplained", ["unknown"]),
     ]
-    shown = [(label, _int(d.get(key))) for key, label in buckets if _int(d.get(key))]
+    shown = []
+    for label, keys in groups:
+        n = sum(_int(d.get(k)) for k in keys)
+        if n:
+            shown.append((label, n))
     total = sum(n for _, n in shown)
 
     parts = [f"**{claims:,}** claimed"]
