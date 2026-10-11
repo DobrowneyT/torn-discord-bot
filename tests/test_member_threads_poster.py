@@ -18,7 +18,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import chain_settings  # noqa: E402
+import rw_settings  # noqa: E402
 import member_threads_poster as poster  # noqa: E402
 
 
@@ -71,11 +71,17 @@ class TestTheForumGate:
         # member's "running log" would be one flat stream in a shared channel.
         client = MagicMock()
         client.get_channel.return_value = MagicMock(spec=discord.TextChannel)
-        with patch.object(chain_settings, "get", return_value=999):
+        # ⚠️ Patched on `rw_settings`, which is what the poster reads since
+        # #944. Patching `chain_settings` here left this test passing for the
+        # wrong reason: the real unset value short-circuited before the type
+        # check it claims to exercise ever ran.
+        with patch.object(rw_settings, "get", return_value=999), \
+             patch.object(rw_settings, "adopt_from_chain", return_value=False):
             assert run(poster._resolve_forum(client, "forge")) is None
 
     def test_unset_is_zero_not_a_fallback(self):
-        with patch.object(chain_settings, "get", return_value=0):
+        with patch.object(rw_settings, "get", return_value=0), \
+             patch.object(rw_settings, "adopt_from_chain", return_value=False):
             assert poster.forum_id("forge") == 0
             assert run(poster._resolve_forum(MagicMock(), "forge")) is None
 

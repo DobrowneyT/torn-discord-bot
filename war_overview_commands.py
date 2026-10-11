@@ -24,6 +24,7 @@ from discord import app_commands
 
 import chain_tenants
 import choon_auth
+import rw_settings
 import war_overview_api as api
 import war_overview_bins as binsize
 import war_overview_chart as chart
@@ -277,5 +278,74 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
             return []
         return [app_commands.Choice(name=label, value=value)
                 for label, value in fmt.member_choices(payload, current)]
+
+    @rw.command(name="config",
+                description="Ranked-war settings for this faction (leadership)")
+    @app_commands.describe(
+        forum="Forum channel for per-member war reports. Omit to see the current setting.",
+        faction="Which faction (optional when only one is configured)")
+    async def config_cmd(interaction: discord.Interaction,
+                         forum: Optional[discord.ForumChannel] = None,
+                         faction: Optional[str] = None) -> None:
+        """
+        ⚠️ **`forum` is typed as a ForumChannel**, so Discord's own picker will
+        not offer a text channel. The previous shape — a key/value pair through
+        `/chain set` — let somebody point this at a text channel, which accepts
+        posts and creates no threads, so every member's "running log" became one
+        flat stream in a shared channel. A type annotation removes the failure
+        rather than detecting it.
+
+        ⚠️ **Gated with `may_manage`, the same gate as `/chain set`.** What this
+        decides is where permanent per-member performance records get published.
+        `may_read` would let any member of the server redirect them.
+        """
+        slug, err = resolve(faction)
+        if err:
+            await interaction.response.send_message(err, ephemeral=True)
+            return
+
+        allowed, refusal = choon_auth.may_manage(interaction, slug)
+        if not allowed:
+            await interaction.response.send_message(refusal, ephemeral=True)
+            return
+
+        # ⚠️ Carry over a value set through `/chain set` during the hour this
+        # setting lived there, before reading it back.
+        rw_settings.adopt_from_chain(slug)
+
+        if forum is not None:
+            ok, message = rw_settings.set_value(slug, "member_thread_forum_id", forum.id)
+            if ok:
+                message = (f"Member war reports for `{slug}` will post into "
+                           f"{forum.mention}.")
+            await interaction.response.send_message(message, ephemeral=True)
+            return
+
+        current = rw_settings.get(slug, "member_thread_forum_id")
+        lines = []
+        for key, setting in rw_settings.SETTINGS.items():
+            value = rw_settings.get(slug, key)
+            shown = (f"<#{value}>" if value else "*unset*") if setting.kind == "channel" else value
+            lines.append(f"**`{key}`** — {shown}\n{setting.help}")
+        embed = discord.Embed(
+            title=f"Ranked-war settings — {slug}",
+            description="\n\n".join(lines)[:4000],
+            color=0x3498DB,
+        )
+        # ⚠️ Said out loud when unset, because "no reports appeared" and "the
+        # bot is broken" look identical from the outside.
+        if not current:
+            embed.description = (
+                "⚠️ **No forum is set, so member war reports do not post at "
+                "all.** There is no fallback channel on purpose — these are "
+                "permanent per-member records, and guessing an audience for "
+                "them is worse than posting nothing.\n"
+                "Set it with `/rw config forum:<your forum>`.\n\n"
+            ) + (embed.description or "")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+
+    @config_cmd.autocomplete("faction")
+    async def config_faction_autocomplete(interaction: discord.Interaction, current: str):
+        return slug_choices(current, interaction)
 
     tree.add_command(rw, guild=guild)

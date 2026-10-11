@@ -27,9 +27,9 @@ from typing import Any, Dict, Optional, Tuple
 
 import discord
 
-import chain_settings
 import member_report_format as fmt
 import member_threads_api as api
+import rw_settings
 
 log = logging.getLogger("member_threads_poster")
 
@@ -69,7 +69,14 @@ class ThreadGone(Exception):
 
 
 def forum_id(slug: str) -> int:
-    return int(chain_settings.get(slug, "member_thread_forum_id") or 0)
+    """
+    Where this faction's member threads live, or 0.
+
+    ⚠️ From `rw_settings`, not `chain_settings` (#944). It is set with
+    `/rw config forum:…` — a ranked-war setting, not a Chain Watch tunable.
+    """
+    rw_settings.adopt_from_chain(slug)
+    return int(rw_settings.get(slug, "member_thread_forum_id") or 0)
 
 
 async def _resolve_forum(client: discord.Client, slug: str) -> Optional[discord.ForumChannel]:
