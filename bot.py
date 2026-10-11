@@ -28,6 +28,7 @@ from dotenv import load_dotenv
 
 import alerts as alerts_mod
 import chain_runtime
+import member_threads_runtime
 import enrich
 import formatter as formatter_mod
 import state as state_mod
@@ -69,6 +70,10 @@ class OCWatcher(discord.Client):
         # logged. Opt-in: None unless a CHAIN_WATCH_TOKEN_* is configured, so
         # the OC watcher is untouched for anyone not using it.
         self.chain = chain_runtime.ChainRuntime(self) if chain else None
+        # ⚠️ #943 — the member-report drain, on this same client for the same
+        # reason. Opt-in on a forum being configured, so a faction that has not
+        # pointed it anywhere posts nothing.
+        self.member_reports = member_threads_runtime.MemberThreadsRuntime(self)
 
     async def setup_hook(self) -> None:
         # Register the persistent view so button clicks route to its callback
@@ -96,6 +101,14 @@ class OCWatcher(discord.Client):
                 await self.chain.start()
             except Exception:                              # noqa: BLE001
                 log.exception("Chain Watch failed to start — OC watcher continues")
+        # ⚠️ Separately guarded. A member-report misconfiguration must not stop
+        # Chain Watch, and neither may stop the OC watcher.
+        if member_threads_runtime.enabled():
+            try:
+                await self.member_reports.start()
+                log.info("Member reports enabled (a member_thread_forum_id is set)")
+            except Exception:                              # noqa: BLE001
+                log.exception("Member reports failed to start — everything else continues")
 
     async def on_interaction(self, interaction: discord.Interaction) -> None:
         data = getattr(interaction, "data", None) or {}
