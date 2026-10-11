@@ -29,6 +29,7 @@ from typing import Any, Dict, Optional, Tuple
 
 import discord
 
+import member_note_format as notes
 import member_report_format as fmt
 import war_overview_chart as chart
 import member_threads_api as api
@@ -280,6 +281,47 @@ async def _find_existing_post(
     return None
 
 
+async def _post_note(
+    client: discord.Client, slug: str, entry: Dict[str, Any],
+    threads: Dict[str, Any], forum: discord.ForumChannel,
+) -> Tuple[bool, str]:
+    """
+    One membership note — a join or a leave.
+
+    ⚠️ **A join is what CREATES a member's thread**, so this is the path a brand
+    new member takes. A leave appends to the thread they already have.
+
+    ⚠️ **No footer scan and no edit.** Each note is unique on
+    `(member, kind, stint)`, so there is nothing to correct — unlike a war
+    report, where a re-run means "fix this one".
+    """
+    entry_id = int(entry["id"])
+    member_id = str(entry["member_id"])
+    payload = entry.get("payload") or {}
+
+    line = notes.note_line(
+        entry.get("kind"), payload, entry.get("queued_ms"), member_id)
+    if line is None:
+        return False, f"no renderer for outbox kind {entry.get('kind')!r}"
+
+    registered = threads.get(member_id) or {}
+    thread_id = registered.get("thread_id")
+
+    if thread_id:
+        thread = await _existing_thread(forum, int(thread_id), member_id)
+        msg = await thread.send(content=line)
+        api.mark_posted(slug, entry_id, message_id=msg.id,
+                        thread_id=thread.id, channel_id=forum.id)
+        return True, f"noted {entry.get('kind')} in thread {thread.id}"
+
+    created = await forum.create_thread(
+        name=notes.thread_title(payload, member_id), content=line)
+    api.mark_posted(slug, entry_id, message_id=created.message.id,
+                    thread_id=created.thread.id, channel_id=forum.id)
+    return True, (f"created thread {created.thread.id} for a "
+                  f"{entry.get('kind')} note")
+
+
 async def post_one(
     client: discord.Client, slug: str, entry: Dict[str, Any],
     threads: Dict[str, Any], forum: discord.ForumChannel,
@@ -294,10 +336,20 @@ async def post_one(
     entry_id = int(entry["id"])
     member_id = str(entry["member_id"])
     payload = entry.get("payload") or {}
-    war_id = payload.get("war_id")
+    kind = entry.get("kind")
 
+    # ⚠️ **Membership notes are not war reports and must not be run through the
+    # report path.** They have no `war_id`, and this function used to refuse
+    # anything without one — so every `joined` and `left` note failed on every
+    # tick for ever, which is the whole of #942 silently not working.
+    if kind in notes.KINDS:
+        return await _post_note(client, slug, entry, threads, forum)
+
+    war_id = payload.get("war_id")
     if war_id is None:
-        return False, "entry has no war_id in its payload"
+        # ⚠️ Now genuinely unexpected: a kind nobody taught this drain about.
+        # Named so it is obvious which, rather than blaming the payload.
+        return False, f"unknown outbox kind {kind!r} with no war_id"
 
     facts = await asyncio.to_thread(api.report, slug, war_id, member_id)
     if facts is None:
