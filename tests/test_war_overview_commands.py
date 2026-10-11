@@ -112,10 +112,15 @@ def test_summary_only_exists_and_defaults_to_off():
     assert {p.name: p for p in cmd().parameters}["summary_only"].default is False
 
 
-def test_warring_only_defaults_to_true():
-    # ⚠️ The common case. A post-mortem asks about the war, and the unfiltered
-    # numbers sweep in every chain-filler hit made during the window.
-    assert {p.name: p for p in cmd().parameters}["warring_only"].default is True
+def test_warring_only_defaults_to_FALSE():
+    # ⚠️ Flipped on MonChoon's instruction: *"can we have the warring_only
+    # default to false instead, and have members explicitly set it to true if
+    # they only want the warring summary."*
+    #
+    # The old default hid third factions entirely — and hiding them is what made
+    # the missing faction NAMES invisible for so long, since the rows that
+    # needed naming were being filtered out before anybody saw them.
+    assert {p.name: p for p in cmd().parameters}["warring_only"].default is False
 
 
 class TestValidate:

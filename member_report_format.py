@@ -56,7 +56,10 @@ def war_title(p: Dict) -> str:
     m = p.get("member") or {}
     name = m.get("name") or f"id {m.get('id')}"
     opp = w.get("opponent_name") or f"faction {w.get('opponent_id')}"
-    kind = "termed war" if w.get("is_termed") else "war"
+    # ⚠️ **Stated either way, not only when termed.** "war vs X" gave no
+    # signal at all — MonChoon could not tell whether a real war was real or
+    # simply unlabelled, which is the whole question he wanted answered.
+    kind = "termed war" if w.get("is_termed") else "real war"
     return f"{name} — {kind} vs {opp}"
 
 

@@ -257,9 +257,12 @@ class TestTheDashboardContract:
         assert "overdos" not in fmt.stacks_line(self.payload())
 
     # ⚠️ real vs termed, which changes how every number below should be read.
-    def test_a_real_war_is_titled_plainly(self):
+    def test_a_real_war_SAYS_it_is_real(self):
+        # ⚠️ Stated either way. "war vs X" gave no signal at all, so a real war
+        # was indistinguishable from one nobody had labelled — which is exactly
+        # the question MonChoon wanted the title to answer.
         assert fmt.war_title(self.payload()) == \
-            "MonChoon_616 — war vs Romania Elite Kommando"
+            "MonChoon_616 — real war vs Romania Elite Kommando"
 
     def test_a_termed_war_says_so_in_the_title(self):
         p = self.payload()
@@ -267,8 +270,12 @@ class TestTheDashboardContract:
         assert "termed war vs" in fmt.war_title(p)
 
     def test_a_missing_is_termed_reads_as_real_rather_than_crashing(self):
+        # ⚠️ `is_termed` is a HAND toggle defaulting to false on the dashboard,
+        # so "real war" reports the LABEL, not a verified fact: a termed war
+        # nobody toggled still reads as real. Worth knowing when reading one.
         p = self.payload()
         del p["war"]["is_termed"]
+        assert "real war" in fmt.war_title(p)
         assert "termed" not in fmt.war_title(p)
 
 
