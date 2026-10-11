@@ -43,7 +43,11 @@ MEMBER_REPORT = {
     #   raw        — respect as Torn awarded it, bonus hits and all
     #   normalised — bonus-chain hits capped at 10, which is the payout basis
     #   bonus      — the difference, i.e. what capping gave back
-    "score": {"raw": 1284.50, "normalised": 1096.25, "bonus": 188.25, "hits": 169},
+    # ⚠️ The REAL key names from `MemberWarScore` in the dashboard. This said
+    # `bonus` for weeks; the formatter read `bonus` too, so both agreed with
+    # each other and neither agreed with the endpoint.
+    "score": {"raw": 1284.50, "normalised": 1096.25, "bonus_reduction": 188.25,
+              "hits": 169, "bonus_hits": 7},
 
     # Exactly what `/rw overview`'s member mode already prints.
     "summary": {

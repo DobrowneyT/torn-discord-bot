@@ -82,14 +82,27 @@ def score_line(p: Dict) -> str:
     maintainer needs, and only one of them is reading the embed.
     """
     sc = p.get("score")
-    if not sc:
-        # ⚠️ Not zero. No contribution row means we have nothing for them in
-        # this war, which is a different fact from having scored nothing.
+    if sc is None:
+        # ⚠️ **Only an EMPTY LEDGER reaches here.** The dashboard sends a real
+        # zero when it has the war's attacks and this member is not in them, so
+        # "not recorded" now means what it says: we have nothing for this war at
+        # all. It used to be sent for anybody who had not scored, and MonChoon
+        # read it — correctly — as looking like a data-loss bug.
         return "⚔️ **Score** · not recorded"
+
     raw = _num(sc.get("raw"))
     norm = _num(sc.get("normalised"))
+    if _int(sc.get("hits")) == 0:
+        # ⚠️ Said plainly rather than as "0.00 raw · 0.00 normalised", which
+        # invites the reader to wonder which of the two zeros is the real one.
+        return "⚔️ **Score** · **0** · no scoring hits"
+
     line = f"⚔️ **Score** · **{raw:,.2f}** raw · **{norm:,.2f}** normalised"
-    bonus = _num(sc.get("bonus"))
+    # ⚠️ `bonus_reduction`, the key the dashboard actually sends. This read
+    # `bonus` and therefore never fired — the THIRD field-name mismatch of the
+    # same kind, and the one that hid itself: a missing deduction looks exactly
+    # like a member who landed no bonus hits.
+    bonus = _num(sc.get("bonus_reduction"))
     if bonus > 0:
         # Only when capping actually bit — "−0.00 from bonus hits" on every
         # ordinary row is noise that trains people to skip the line.
@@ -143,14 +156,21 @@ def roll_call_line(p: Dict) -> str:
         elif rc.get("needs_merc"):
             bits.append("needed a merc")
 
+    # ⚠️ **Turn-up is only asked of somebody who said they would BE there.**
+    # Reece said "not on at the start" and made no attacks, and the first
+    # version still printed "turn-up not measured" — noise about a question he
+    # had already answered, in his own performance thread. Nothing to measure
+    # against is the expected outcome of the answer he gave.
     offset = rc.get("first_action_offset_sec")
-    if offset is None:
-        # ⚠️ Not "did not show". We simply have no attack to measure against,
-        # which is also true of somebody who spent the war being revived.
-        bits.append("turn-up not measured")
-    elif rc.get("on_at_start"):
-        mins = offset // 60
-        bits.append("**turned up**" if offset <= 900 else f"first hit **{mins}m** in")
+    if rc.get("on_at_start"):
+        if offset is None:
+            # ⚠️ They said they would be on and we have no attack from them.
+            # Stated as the fact it is — "no attacks recorded" — not as a
+            # verdict: somebody revived all war also records none.
+            bits.append("⚠️ **no attacks recorded**")
+        else:
+            mins = offset // 60
+            bits.append("**turned up**" if offset <= 900 else f"first hit **{mins}m** in")
 
     if rc.get("revised"):
         bits.append("_(answer revised)_")
