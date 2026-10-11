@@ -64,14 +64,29 @@ class TestRollCall:
                            "availability": "on_time", "first_action_offset_sec": 3600}}
         assert "60m" in fmt.roll_call_line(p)
 
-    def test_unmeasured_turn_up_is_not_a_no_show(self):
-        # ⚠️ No attack to measure against is also true of somebody who spent the
-        # war being revived. "Did not show" would be an invention.
+    def test_said_on_but_no_attacks_is_stated_as_a_FACT_not_a_verdict(self):
+        # ⚠️ They said they would be on and the ledger has no attack from them.
+        # Worth saying — it is the accountability signal — but as the fact it
+        # is: somebody revived all war also records none. "Did not show" would
+        # be an invention.
         p = {"roll_call": {"responded": True, "on_at_start": True,
                            "availability": "on_time", "first_action_offset_sec": None}}
         line = fmt.roll_call_line(p)
-        assert "not measured" in line
+        assert "no attacks recorded" in line
         assert "did not" not in line.lower()
+
+    def test_turn_up_is_NOT_mentioned_for_somebody_who_said_they_were_not_on(self):
+        # ⚠️ Reece said "not on at the start" and the embed still printed
+        # "turn-up not measured" — noise about a question he had already
+        # answered, in his own performance thread. Nothing to measure is the
+        # expected outcome of the answer he gave.
+        p = {"roll_call": {"responded": True, "on_at_start": False,
+                           "availability": "unavailable", "needs_merc": True,
+                           "first_action_offset_sec": None}}
+        line = fmt.roll_call_line(p)
+        assert "not measured" not in line
+        assert "no attacks recorded" not in line
+        assert "not on at the start" in line
 
     def test_self_hosp_only_qualifies_a_no(self):
         # The panel renders "—" for everyone who IS on at the start; repeating
@@ -371,3 +386,27 @@ class TestTheDibsBucketsAddUp:
         zeroed["unknown"] = 2
         line = fmt.dibs_line({"dibs": {"state": "measured", "counts": zeroed}})
         assert "unexplained" in line and "void" not in line
+
+
+    def test_a_zero_score_says_zero_rather_than_not_recorded(self):
+        # MonChoon: "if they had a 0, we should just show 0, not recorded makes
+        # it seem like a weird data loss issue."
+        line = fmt.score_line({"score": {"raw": 0, "normalised": 0,
+                                         "bonus_reduction": 0, "hits": 0,
+                                         "bonus_hits": 0}})
+        assert "not recorded" not in line
+        assert "no scoring hits" in line
+
+    def test_only_a_missing_score_is_not_recorded(self):
+        # Reserved for an empty ledger — we genuinely have nothing for the war.
+        assert "not recorded" in fmt.score_line({"score": None})
+
+    def test_the_bonus_deduction_uses_the_key_the_dashboard_SENDS(self):
+        # ⚠️ This read `bonus` while the endpoint sends `bonus_reduction`, so
+        # the deduction never rendered — and a missing deduction looks exactly
+        # like a member who landed no bonus hits, which is why it hid.
+        line = fmt.score_line({"score": {"raw": 1284.5, "normalised": 1096.25,
+                                         "bonus_reduction": 188.25, "hits": 169,
+                                         "bonus_hits": 7}})
+        assert "188.25" in line
+        assert "from bonus hits" in line
