@@ -257,26 +257,49 @@ class TestTheDashboardContract:
         assert "overdos" not in fmt.stacks_line(self.payload())
 
     # ⚠️ real vs termed, which changes how every number below should be read.
-    def test_a_real_war_SAYS_it_is_real(self):
-        # ⚠️ Stated either way. "war vs X" gave no signal at all, so a real war
-        # was indistinguishable from one nobody had labelled — which is exactly
-        # the question MonChoon wanted the title to answer.
-        assert fmt.war_title(self.payload()) == \
-            "MonChoon_616 — real war vs Romania Elite Kommando"
-
-    def test_a_termed_war_says_so_in_the_title(self):
+    def test_a_real_war_is_labelled_Real(self):
+        # MonChoon's format: "MonChoon_616 — Romania Elite Kommando (Real)".
         p = self.payload()
-        p["war"]["is_termed"] = True
-        assert "termed war vs" in fmt.war_title(p)
+        p["war"]["war_type"] = "real"
+        assert fmt.war_title(p) == "MonChoon_616 — Romania Elite Kommando (Real)"
 
-    def test_a_missing_is_termed_reads_as_real_rather_than_crashing(self):
-        # ⚠️ `is_termed` is a HAND toggle defaulting to false on the dashboard,
-        # so "real war" reports the LABEL, not a verified fact: a termed war
-        # nobody toggled still reads as real. Worth knowing when reading one.
+    def test_a_termed_war_is_labelled_Termed(self):
         p = self.payload()
-        del p["war"]["is_termed"]
-        assert "real war" in fmt.war_title(p)
-        assert "termed" not in fmt.war_title(p)
+        p["war"]["war_type"] = "termed"
+        assert fmt.war_title(p).endswith("(Termed)")
+
+    def test_a_race_is_labelled_Race(self):
+        # ⚠️ The reason `war_type` is read instead of the `is_termed` boolean:
+        # that boolean cannot express a race at all.
+        p = self.payload()
+        p["war"]["war_type"] = "race"
+        assert fmt.war_title(p).endswith("(Race)")
+
+    def test_no_war_type_means_NO_suffix_at_all(self):
+        # ⚠️ Three of forge's eleven wars have no War Room note. "(Real)" on one
+        # of those asserts a choice nobody made — the same error as rendering
+        # every unlabelled war as ordinary, just in the other direction.
+        #
+        # ⚠️ This guard did not exist until a probe caught its absence: a
+        # string replace meant to add it silently did not match, and defaulting
+        # an unset type to "Real" passed the whole file.
+        p = self.payload()
+        p["war"]["war_type"] = None
+        assert fmt.war_title(p) == "MonChoon_616 — Romania Elite Kommando"
+        assert "(" not in fmt.war_title(p)
+
+    def test_a_war_block_with_no_war_type_KEY_also_gets_no_suffix(self):
+        # An older dashboard that does not send the field must not cause every
+        # war to be labelled.
+        p = self.payload()
+        p["war"].pop("war_type", None)
+        assert "(" not in fmt.war_title(p)
+
+    def test_an_unknown_war_type_is_not_printed_raw(self):
+        p = self.payload()
+        p["war"]["war_type"] = "reeal"
+        assert "reeal" not in fmt.war_title(p)
+        assert "(" not in fmt.war_title(p)
 
 
 class TestTheDibsBucketsAddUp:
@@ -312,7 +335,7 @@ class TestTheDibsBucketsAddUp:
     def test_every_nonzero_group_appears(self):
         # ⚠️ The bug was a SILENT omission, so this asserts presence by label.
         line = self.line()
-        for label in ("won", "lost", "taken by us", "no swing", "dropped"):
+        for label in ("won", "lost", "taken", "no swing", "dropped"):
             assert label in line, label
 
     def test_zero_groups_are_omitted(self):
@@ -326,7 +349,7 @@ class TestTheDibsBucketsAddUp:
         # eight groups: the grouping is where a column silently vanishes.
         cases = {
             "converted": "won", "attempted": "lost",
-            "taken_from": "taken by us", "no_swing": "no swing",
+            "taken_from": "taken", "no_swing": "no swing",
             "released": "dropped", "hopped": "dropped",
             "overridden": "void", "outside": "void",
             "board_reset": "void", "still_open": "still held",
