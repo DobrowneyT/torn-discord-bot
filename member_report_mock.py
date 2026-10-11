@@ -52,12 +52,20 @@ MEMBER_REPORT = {
         "revives": {"success": 6, "failure": 1, "total": 7},
     },
 
-    # war_dibs_summary, one row.
+    # ⚠️ Three states, from the dashboard: "disabled" (this tenant does not run
+    # the dibs summary), "pending" (on, not finished for this war) or
+    # "measured". `counts` is non-null only when measured, and then a row of
+    # zeros is a real measurement rather than an absence.
     "dibs": {
-        "claims": 24, "converted": 17, "attempted": 2, "taken_from": 1,
-        "no_swing": 1, "outside": 1, "released": 0, "hopped": 1,
-        "overridden": 0, "board_reset": 0, "still_open": 0, "unknown": 0,
-        "green_means_go": 1, "swung": 19, "took_from_others": 0,
+        "state": "measured",
+        "measured_ms": 1790007200000,
+        "grace_seconds": 120,
+        "counts": {
+            "claims": 24, "converted": 17, "attempted": 2, "taken_from": 1,
+            "no_swing": 1, "outside": 1, "released": 0, "hopped": 1,
+            "overridden": 0, "board_reset": 0, "still_open": 0, "unknown": 0,
+            "green_means_go": 1, "swung": 19, "took_from_others": 0,
+        },
     },
 
     # war_room_roll_call_v2, this member's row.
@@ -90,7 +98,9 @@ MEMBER_REPORT_SPARSE = {
         "revives": {"success": 2, "failure": 0, "total": 2},
     },
     "score": None,         # no contribution row for this member
-    "dibs": None,          # never summarised, or never claimed
+    # On, but this war has not been summarised — NOT the same as claiming
+    # nothing, and the formatter must not collapse the two.
+    "dibs": {"state": "pending", "measured_ms": None, "grace_seconds": None, "counts": None},
     "roll_call": None,     # never answered
     "stacks": None,        # not snapshotted
 }

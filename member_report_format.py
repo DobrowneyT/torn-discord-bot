@@ -144,18 +144,43 @@ def roll_call_line(p: Dict) -> str:
     return "📋 **Roll call** · " + " · ".join(bits)
 
 
-def dibs_line(p: Dict) -> str:
+def dibs_line(p: Dict) -> Optional[str]:
     """
-    Their claiming record.
+    Their claiming record, or None when the line should not appear at all.
 
-    ⚠️ `None` means the war has not been summarised yet — the job waits for the
-    attacks to land — and that is different from "claimed nothing". Saying
-    "0 claims" to somebody who claimed twenty would be the worst version of this
-    whole feature.
+    ⚠️ **THREE states, not two**, and they lead to different lines because they
+    lead to different truths:
+
+      disabled → omitted entirely. This tenant does not run the dibs summary,
+                 so the absence says nothing about the member. Printing
+                 "not counted yet" in all ~94 threads every war would be a
+                 standing complaint about a config choice.
+      pending  → "not counted yet". The job is on and has not finished; saying
+                 "0 claims" to somebody who claimed twenty would be the worst
+                 version of this whole feature.
+      measured → the numbers, and a genuine zero reads as "no claims" because
+                 the job ran and there were none.
+
+    MonChoon, 2026-10-11: *"If dibs summary is disabled we can ship the war
+    reports without it rather than wait."*
     """
     d = p.get("dibs")
+    # ⚠️ A payload with no `dibs` key at all is treated as pending, not as
+    # measured-zero. An older dashboard that does not send the field must not
+    # cause "no claims" to be posted about everybody.
     if d is None:
         return "🎯 **Dibs** · not counted yet"
+    state = d.get("state")
+    if state == "disabled":
+        return None
+    if state != "measured":
+        return "🎯 **Dibs** · not counted yet"
+    counts = d.get("counts")
+    if counts is None:
+        # ⚠️ Measured but no counts is a dashboard bug, not a zero. Say nothing
+        # rather than assert something false about a named person.
+        return "🎯 **Dibs** · not counted yet"
+    d = counts
     claims = _int(d.get("claims"))
     if claims == 0 and _int(d.get("took_from_others")) == 0:
         return "🎯 **Dibs** · no claims"
@@ -193,7 +218,10 @@ def build_member_report(p: Dict) -> Dict[str, Any]:
     lines.extend(hits_lines(p))
     lines.append("")
     lines.append(roll_call_line(p))
-    lines.append(dibs_line(p))
+    # ⚠️ Omitted entirely when this tenant does not run the dibs summary.
+    dibs = dibs_line(p)
+    if dibs:
+        lines.append(dibs)
     stacks = stacks_line(p)
     if stacks:
         lines.append(stacks)

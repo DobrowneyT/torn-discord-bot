@@ -91,11 +91,28 @@ class TestDibs:
         # worst version of this whole feature.
         assert "not counted yet" in fmt.dibs_line({"dibs": None})
 
+    def test_pending_is_not_counted_yet(self):
+        # The job is ON and has not finished for this war.
+        assert "not counted yet" in fmt.dibs_line({"dibs": {"state": "pending", "counts": None}})
+
+    def test_disabled_omits_the_line_entirely(self):
+        # ⚠️ This tenant does not run the dibs summary, so the absence says
+        # nothing about the member. `dibs-summary` is enabled on one of five
+        # tenants, so otherwise every one of ~94 threads would carry a standing
+        # complaint about a config choice, every war, for ever.
+        assert fmt.dibs_line({"dibs": {"state": "disabled", "counts": None}}) is None
+
+    def test_measured_without_counts_does_not_become_a_zero(self):
+        # A dashboard bug must not be rendered as a claim about a person.
+        assert "not counted yet" in fmt.dibs_line({"dibs": {"state": "measured", "counts": None}})
+
     def test_no_claims_says_so_plainly(self):
-        assert "no claims" in fmt.dibs_line({"dibs": {"claims": 0, "took_from_others": 0}})
+        assert "no claims" in fmt.dibs_line(
+            {"dibs": {"state": "measured", "counts": {"claims": 0, "took_from_others": 0}}})
 
     def test_a_taker_who_claimed_nothing_still_appears(self):
-        line = fmt.dibs_line({"dibs": {"claims": 0, "took_from_others": 3}})
+        line = fmt.dibs_line(
+            {"dibs": {"state": "measured", "counts": {"claims": 0, "took_from_others": 3}}})
         assert "no claims" not in line
         assert "3" in line
 
@@ -104,8 +121,9 @@ class TestDibs:
         assert "green" in line
 
     def test_quiet_buckets_are_omitted_rather_than_printed_as_zero(self):
-        line = fmt.dibs_line({"dibs": {"claims": 5, "converted": 5, "no_swing": 0,
-                                       "taken_from": 0, "green_means_go": 0, "took_from_others": 0}})
+        line = fmt.dibs_line({"dibs": {"state": "measured", "counts": {
+            "claims": 5, "converted": 5, "no_swing": 0,
+            "taken_from": 0, "green_means_go": 0, "took_from_others": 0}}})
         assert "no swing" not in line
         assert "taken from" not in line
 
