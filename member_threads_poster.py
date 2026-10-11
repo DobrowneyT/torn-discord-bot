@@ -322,34 +322,54 @@ async def post_one(
         # signal that this is a correction rather than a first post.
         existing_message = entry.get("message_id")
 
-        if not existing_message:
-            # ⚠️ **Ask the THREAD before posting** (#946). The recorded id
-            # covers an interrupted run; it cannot cover Discord accepting a
-            # post and the write back to the dashboard failing afterwards. Then
-            # the entry has no id and a naive retry adds a second embed to a
-            # permanent thread. The footer carries the war id for exactly this.
-            me = getattr(getattr(client, "user", None), "id", None)
-            found = await _find_existing_post(thread, war_id, me)
-            if found is not None:
-                # ⚠️ `attachments=` REPLACES the set. Omitting it on an edit
-                # leaves the previous chart under the corrected numbers, which
-                # is worse than no chart: a picture that contradicts the figures
-                # beside it.
-                await found.edit(embed=embed, attachments=_files(chart_file))
-                api.mark_posted(slug, entry_id, message_id=found.id,
-                                thread_id=thread.id, channel_id=forum.id)
-                return True, (f"recovered and edited {found.id} in thread "
-                              f"{thread.id} (post existed, id was never recorded)")
-
         if existing_message:
             # ⚠️ EDIT, not a second post. A re-run of the same war is a
             # correction. MonChoon: *"on a re-run for the same war I would edit
             # the post. on a new war I would append."*
-            msg = await thread.fetch_message(int(existing_message))
-            await msg.edit(embed=embed, attachments=_files(chart_file))
-            api.mark_posted(slug, entry_id, message_id=msg.id,
+            try:
+                msg = await thread.fetch_message(int(existing_message))
+            except discord.NotFound:
+                # ⚠️ **The recorded post was DELETED — re-post it.**
+                #
+                # This looks like it contradicts the never-recreate rule for
+                # threads, and it is the opposite case. Deleting a THREAD
+                # destroys a member's whole running log, and silently making a
+                # fresh one hides that the history is gone. Deleting one
+                # MESSAGE removes one war's report from a log that is otherwise
+                # intact, and re-posting restores exactly what was lost.
+                #
+                # Without this the entry 404s on every tick for ever: the id
+                # points at nothing, so the edit can never succeed and the
+                # report can never come back. MonChoon deleted one expecting it
+                # to be recreated, which is the reasonable expectation.
+                log.info("%s: recorded message %s for member %s is gone — "
+                         "re-posting it", slug, existing_message, member_id)
+                existing_message = None
+            else:
+                # ⚠️ `attachments=` REPLACES the set. Omitting it on an edit
+                # leaves the previous chart under the corrected numbers, which
+                # is worse than no chart: a picture that contradicts the figures
+                # beside it.
+                await msg.edit(embed=embed, attachments=_files(chart_file))
+                api.mark_posted(slug, entry_id, message_id=msg.id,
+                                thread_id=thread.id, channel_id=forum.id)
+                return True, f"edited {msg.id} in thread {thread.id}"
+
+        # ⚠️ **Ask the THREAD before posting** (#946). Reached either because
+        # nothing was ever recorded, or because what was recorded has been
+        # deleted. The recorded id cannot cover Discord accepting a post while
+        # the write back to the dashboard fails — then the entry has no id and
+        # a naive retry adds a second embed to a permanent thread. The footer
+        # carries the war id for exactly this.
+        me = getattr(getattr(client, "user", None), "id", None)
+        found = await _find_existing_post(thread, war_id, me)
+        if found is not None:
+            await found.edit(embed=embed, attachments=_files(chart_file))
+            api.mark_posted(slug, entry_id, message_id=found.id,
                             thread_id=thread.id, channel_id=forum.id)
-            return True, f"edited {msg.id} in thread {thread.id}"
+            return True, (f"recovered and edited {found.id} in thread "
+                          f"{thread.id} (post existed, id was never recorded)")
+
         msg = await thread.send(embed=embed, **_kw(chart_file))
         api.mark_posted(slug, entry_id, message_id=msg.id,
                         thread_id=thread.id, channel_id=forum.id)
