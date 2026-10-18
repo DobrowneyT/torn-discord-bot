@@ -183,7 +183,8 @@ def _hour_lines(hours: List[Dict], slots_per_hour: int, *,
 
 def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
                 stale: bool = False, compact: bool = False,
-                sign_up_url: Optional[str] = None) -> List[discord.Embed]:
+                sign_up_url: Optional[str] = None,
+                preview_hours: int = 6) -> List[discord.Embed]:
     """The standing board: what is covered, what is not, and where the chain is going."""
     event = watch.get("event", {})
     slots_per_hour = int(event.get("slots_per_hour", 2))
@@ -197,7 +198,11 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     # hour is in the future" is NOT the same thing: a running board can begin
     # with the next hour, and guessing would mislabel a live chain as a preview.
     preview = bool(watch.get("preview")) and bool(hours)
-    anchor_ms = hours[0]["hour_start"] if preview and hours else now_ms - (now_ms % 3_600_000)
+    if preview:
+        # The opening `preview_hours` — listed in full AND counted, so the
+        # unfilled line describes exactly the hours on screen.
+        horizon_hours = max(1, int(preview_hours))
+    anchor_ms = hours[0]["hour_start"] if preview else now_ms - (now_ms % 3_600_000)
     horizon_ms = anchor_ms + horizon_hours * 3_600_000
     soon = [h for h in hours if h["hour_start"] < horizon_ms]
     window = f"the first {horizon_hours} hours" if preview else f"the next {horizon_hours} hours"
@@ -247,10 +252,9 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
         lines.append(f"**Every slot in {window} is covered.**")
     lines.append("")
 
-    # The same day's worth either way (MonChoon, 2026-10-18): the opening
-    # `hours_shown` hours before the event, the hours ahead once it runs. The
-    # coverage count above stays on the shorter horizon in both cases.
-    lines.extend(_hour_lines(hours[:hours_shown], slots_per_hour, compact=compact))
+    # Before the event: its opening `preview_hours` (per faction, default 6).
+    # Once it runs: the `hours_shown` hours ahead, every slot either way.
+    lines.extend(_hour_lines(soon if preview else hours[:hours_shown], slots_per_hour, compact=compact))
 
     embed = discord.Embed(
         title=f"{EMBED_TITLE} — {event.get('title', 'Chain')}",

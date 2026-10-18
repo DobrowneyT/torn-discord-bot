@@ -308,9 +308,8 @@ def test_a_board_before_the_event_shows_its_opening_hours_not_nothing():
     hours = [hour(week + i, [w("Ann")] if i == 0 else []) for i in range(30)]
     e = board(hours, preview=True)
     assert "Chain Watch starts" in e.description
-    # Six opening hours: slot counts are about THEM, and the wording says so.
-    assert "in the first 6 hours" in e.description
-    assert "11 slots unfilled" in e.description
+    # Six opening hours by default: slot counts are about THEM, and say so.
+    assert "11 slots unfilled in the first 6 hours" in e.description
     assert "the next 6 hours" not in e.description
 
 
@@ -326,10 +325,15 @@ def test_a_running_board_is_unchanged():
     assert "the next 6 hours" in e.description
 
 
-def test_a_preview_lists_the_same_day_of_hours_as_a_running_board():
+def test_a_preview_lists_its_opening_hours_per_the_faction_setting():
     week = 24 * 7
-    hours = [hour(week + i, [w("Ann")]) for i in range(30)]
-    full = f.build_board({"event": {"title": "T", "slots_per_hour": 2}, "gap_horizon_hours": 6,
-                          "hours": hours, "preview": True}, now_ms=NOW, hours_shown=24)[0]
-    # 24 hours listed, each with Ann — not just the first six.
-    assert full.description.count("Ann") == 24
+    hours = [hour(week + i, [w("Ann")]) for i in range(24)]
+    def preview(n):
+        return f.build_board({"event": {"title": "T", "slots_per_hour": 2}, "gap_horizon_hours": 6,
+                              "hours": hours, "preview": True}, now_ms=NOW, hours_shown=24,
+                             preview_hours=n)[0].description
+    # Default six: six hours listed (every slot), counted over the same six.
+    assert preview(6).count("Ann") == 6
+    assert "6 slots unfilled in the first 6 hours" in preview(6)
+    assert preview(12).count("Ann") == 12
+    assert "in the first 12 hours" in preview(12)

@@ -85,6 +85,14 @@ SETTINGS: Dict[str, Setting] = {
         # server nickname, so "MonChoon_616 [2250591] (TNLF)" is 30 characters;
         # two of those plus the time is ~84 against the ~55-60 a row fits. This
         # is the only way to get one hour per line.
+        # Before the event starts the board shows its OPENING hours — every
+        # slot, filled or not — so members see it fill up (MonChoon,
+        # 2026-10-18, default 6). ⚠️ Capped at 24: that is what the dashboard
+        # sends for a preview (BOARD_HORIZON_HOURS), so a larger number would
+        # promise hours that never arrive.
+        Setting("board_preview_hours", 6, "int",
+                "Before the event starts, how many of its opening hours the board shows.",
+                lo=1, hi=24),
         Setting("board_compact", False, "bool",
                 "Use plain Torn names on the board instead of mentions, so an "
                 "hour fits on one line. Shift pings are unaffected — a mention "
