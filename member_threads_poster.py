@@ -6,6 +6,8 @@ a forum the faction's leadership reads. That shapes every rule below.
 
 The thread lifecycle, and what each failure must do:
 
+  no registry row     → look in the forum for a `[id]` thread and adopt it
+                        (#962); an untagged one with their name fails loudly.
   no thread yet       → create it in the forum, then post. The dashboard's
                         registry learns the thread id from `posted`.
   thread archived     → unarchive and post. Forums archive quiet threads, and
@@ -232,6 +234,61 @@ async def _existing_thread(
     return thread
 
 
+def _bare(text: str) -> str:
+    """How a member's display name is compared with an untagged thread's title."""
+    return re.sub(r"\s+", " ", (text or "")).strip().casefold()
+
+
+async def _forum_threads(forum: discord.ForumChannel):
+    """Every thread in the forum, active and archived."""
+    for thread in list(getattr(forum, "threads", None) or []):
+        yield thread
+    async for thread in forum.archived_threads(limit=None):
+        yield thread
+
+
+async def _adopt_thread(
+    forum: discord.ForumChannel, member_id: str, name: Optional[str],
+) -> Optional[discord.Thread]:
+    """
+    A thread already in the forum for a member the registry does not know (#962).
+
+    ⚠️ **Only ever called when the registry has no row.** The registry is the
+    lookup; this is the fallback for a thread made by hand or before #942, and
+    the `posted` write that follows records it so the scan happens once.
+
+    ⚠️ **Matched by `[member_id]`, never by name.** Torn names change and two
+    members have shared one; the id suffix is the same rule `_looks_like` uses.
+
+    ⚠️ **An untagged thread carrying the member's name is NOT adopted.** That
+    would make a thread named after somebody their permanent record on a
+    guess, so it raises ThreadMismatch and a human decides — add the
+    `[id]` to its title and the next tick adopts it.
+    """
+    tagged = []
+    untagged = []
+    want = _bare(name) if name else ""
+    async for thread in _forum_threads(forum):
+        if _looks_like(thread, member_id):
+            tagged.append(thread)
+        elif want and _bare(thread.name) == want:
+            untagged.append(thread)
+
+    if len(tagged) > 1:
+        raise ThreadMismatch(
+            f"{len(tagged)} threads carry [{member_id}] "
+            f"({', '.join(str(t.id) for t in tagged)}) — refusing to pick one "
+            f"or create another. Merge or retitle them.")
+    if tagged:
+        return await _existing_thread(forum, tagged[0].id, member_id)
+    if untagged:
+        raise ThreadMismatch(
+            f"thread {untagged[0].id} is named {untagged[0].name!r} but has no "
+            f"[{member_id}] — not adopting it on a name match and not creating "
+            f"a second one. Add [{member_id}] to its title if it is theirs.")
+    return None
+
+
 #: How far back a thread is scanned for an existing post. A member's thread
 #: holds one post per war plus the odd membership note, so a war from two years
 #: ago is still well inside this.
@@ -307,8 +364,9 @@ async def _post_note(
     registered = threads.get(member_id) or {}
     thread_id = registered.get("thread_id")
 
-    if thread_id:
-        thread = await _existing_thread(forum, int(thread_id), member_id)
+    thread = (await _existing_thread(forum, int(thread_id), member_id) if thread_id
+              else await _adopt_thread(forum, member_id, payload.get("member_name")))
+    if thread is not None:
         msg = await thread.send(content=line)
         api.mark_posted(slug, entry_id, message_id=msg.id,
                         thread_id=thread.id, channel_id=forum.id)
@@ -365,9 +423,11 @@ async def post_one(
         embed.set_image(url=f"attachment://{CHART_FILENAME}")
     registered = threads.get(member_id) or {}
     thread_id = registered.get("thread_id")
+    name = payload.get("member_name") or facts.get("member", {}).get("name") or member_id
 
-    if thread_id:
-        thread = await _existing_thread(forum, int(thread_id), member_id)
+    thread = (await _existing_thread(forum, int(thread_id), member_id) if thread_id
+              else await _adopt_thread(forum, member_id, name))
+    if thread is not None:
         # ⚠️ **From the ENTRY, not the registry.** The dashboard keeps one
         # outbox row per (member, kind, war), and a re-queue re-opens that row
         # while keeping the message id it recorded. Its presence is the whole
@@ -430,7 +490,6 @@ async def post_one(
     # ⚠️ No thread: create it. The NAME is the member's, and it is what somebody
     # searches the forum for, so it carries the id too — two members have shared
     # a display name before and Torn names change.
-    name = payload.get("member_name") or facts.get("member", {}).get("name") or member_id
     title = f"{name} [{member_id}]"[:100]
     created = await forum.create_thread(name=title, embed=embed, **_kw(chart_file))
     thread = created.thread
