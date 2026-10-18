@@ -190,8 +190,17 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     hours = [h for h in watch.get("hours", []) if h["hour_start"] + 3_600_000 > now_ms]
 
     horizon_hours = int(watch.get("gap_horizon_hours") or GAP_HORIZON_FALLBACK)
-    horizon_ms = now_ms - (now_ms % 3_600_000) + horizon_hours * 3_600_000
+    # ⚠️ Before the event starts the board shows its OPENING hours (MonChoon,
+    # 2026-10-18: "so members get used to seeing it"). Anchored at now, the
+    # window held no event hours and the board went out blank all week.
+    # ⚠️ Only the dashboard's explicit `preview` flag decides it. "The first
+    # hour is in the future" is NOT the same thing: a running board can begin
+    # with the next hour, and guessing would mislabel a live chain as a preview.
+    preview = bool(watch.get("preview")) and bool(hours)
+    anchor_ms = hours[0]["hour_start"] if preview and hours else now_ms - (now_ms % 3_600_000)
+    horizon_ms = anchor_ms + horizon_hours * 3_600_000
     soon = [h for h in hours if h["hour_start"] < horizon_ms]
+    window = f"the first {horizon_hours} hours" if preview else f"the next {horizon_hours} hours"
     # ⚠️ Counts SLOTS, not hours. An hour holding one of two watchers is one
     # unfilled slot — not zero, and not two.
     open_soon = sum(max(0, slots_per_hour - len(h.get("watchers", []))) for h in soon)
@@ -207,6 +216,9 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     chain = watch.get("chain") or {}
     lines = [LEGEND, ""]
 
+    if preview and hours:
+        start = hours[0]["hour_start"]
+        lines.append(f"**Chain Watch starts** {_ts(start, 'F')} ({_ts(start, 'R')})")
     if chain:
         lines.append(f"**Chain** {chain.get('current', 0):,} / {chain.get('target', 100_000):,}")
 
@@ -230,12 +242,13 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     lines.append("")
     if open_soon:
         lines.append(f"**{open_soon} slot{'' if open_soon == 1 else 's'} unfilled "
-                     f"in the next {horizon_hours} hours**")
-    else:
-        lines.append(f"**Every slot in the next {horizon_hours} hours is covered.**")
+                     f"in {window}**")
+    elif soon:
+        lines.append(f"**Every slot in {window} is covered.**")
     lines.append("")
 
-    lines.extend(_hour_lines(hours[:hours_shown], slots_per_hour, compact=compact))
+    # A preview lists the opening hours only; once running, the hours ahead.
+    lines.extend(_hour_lines(soon if preview else hours[:hours_shown], slots_per_hour, compact=compact))
 
     embed = discord.Embed(
         title=f"{EMBED_TITLE} — {event.get('title', 'Chain')}",

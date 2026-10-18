@@ -440,3 +440,22 @@ class TestTheDibsBucketsAddUp:
                                          "bonus_hits": 7}})
         assert "188.25" in line
         assert "from bonus hits" in line
+
+
+class TestDibsFf:
+    """#997 — FF shown at claim time against what the hit paid."""
+
+    def base(self, **counts):
+        c = {"claims": 3, "converted": 3, "took_from_others": 0, "green_means_go": 0, **counts}
+        return {"state": "measured", "measured_ms": 1, "grace_seconds": 5, "counts": c}
+
+    def test_says_what_was_shown_against_what_was_paid(self):
+        import member_report_format as m
+        line = m.dibs_line({"dibs": self.base(ff_compared=3, ff_shown_avg=2.9, ff_actual_avg=2.1, ff_overstated=2)})
+        assert "FF shown → hit · **2.90 → 2.10** over 3 claims" in line
+        assert "2 paid well under (the estimate, not you)" in line
+
+    def test_says_nothing_when_nothing_was_recorded_never_a_zero(self):
+        import member_report_format as m
+        line = m.dibs_line({"dibs": self.base()})
+        assert "FF" not in line

@@ -307,6 +307,18 @@ def dibs_line(p: Dict) -> Optional[str]:
         other.append(f"**{green:,}** green (fair game)")
     if other:
         line += "\n↳ also · " + " · ".join(other)
+    # #997 — the FF the War Room SHOWED when this member called dibs, against
+    # what Torn paid on their first hit. ⚠️ Only when measured: wars before it
+    # shipped record nothing, and a missing figure must not read as a zero.
+    compared = _int(d.get("ff_compared"))
+    if compared and d.get("ff_shown_avg") is not None and d.get("ff_actual_avg") is not None:
+        ff = (f"↳ FF shown → hit · **{_num(d.get('ff_shown_avg')):.2f} → "
+              f"{_num(d.get('ff_actual_avg')):.2f}** over {compared:,} "
+              f"{'claim' if compared == 1 else 'claims'}")
+        low = _int(d.get("ff_overstated"))
+        if low:
+            ff += f" · {low:,} paid well under (the estimate, not you)"
+        line += "\n" + ff
     return line
 
 

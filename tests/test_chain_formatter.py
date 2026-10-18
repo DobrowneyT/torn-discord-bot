@@ -297,3 +297,30 @@ def test_every_message_degrades_to_plain_words_without_a_url():
     assert "drop the slot on the dashboard" in f.build_travel_warning(
         {"name": "A", "member_id": "1", "hour_start": TOP + HOUR,
          "travel": {"state": "Traveling", "destination": "Japan"}})
+
+
+# ── Before the event starts (MonChoon, 2026-10-18) ────────────────────────────
+
+def test_a_board_before_the_event_shows_its_opening_hours_not_nothing():
+    # A week out. Anchored at now, none of these hours fell in the window and
+    # the board went out blank.
+    week = 24 * 7
+    hours = [hour(week + i, [w("Ann")] if i == 0 else []) for i in range(30)]
+    e = board(hours, preview=True)
+    assert "Chain Watch starts" in e.description
+    # Six opening hours: slot counts are about THEM, and the wording says so.
+    assert "in the first 6 hours" in e.description
+    assert "11 slots unfilled" in e.description
+    assert "the next 6 hours" not in e.description
+
+
+def test_only_the_dashboards_flag_makes_a_preview_never_a_guess():
+    # A running board can start with the next hour; that is not a preview.
+    e = board([hour(1, []), hour(2, [])])
+    assert "Chain Watch starts" not in e.description
+
+
+def test_a_running_board_is_unchanged():
+    e = board([hour(0, [w("Ann"), w("Bob")])], preview=False)
+    assert "Chain Watch starts" not in e.description
+    assert "the next 6 hours" in e.description

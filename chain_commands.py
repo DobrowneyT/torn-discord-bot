@@ -384,7 +384,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
                    description="Post here — run it in the channel or thread you want")
     @app_commands.describe(
         which="Which message goes here",
-        faction="Which faction (optional when only one is configured)",
+        faction="Which faction's board this is",
         move="Move it even though it is already posting somewhere else")
     @app_commands.choices(which=[
         app_commands.Choice(name="the board", value="board"),
@@ -393,7 +393,7 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
     ])
     async def channel_cmd(interaction: discord.Interaction,
                           which: app_commands.Choice[str],
-                          faction: Optional[str] = None,
+                          faction: str,
                           move: bool = False) -> None:
         """
         Point a faction's output at wherever this was typed.
@@ -404,6 +404,12 @@ def register(tree: app_commands.CommandTree, *, guild: Optional[discord.Object] 
         could only be configured by copying its id into `/chain set`, which
         nobody discovers. Reading `interaction.channel_id` works for a channel
         and a thread alike.
+
+        ⚠️ `faction` is REQUIRED here, unlike the other commands (MonChoon,
+        2026-10-18). Pointing a board at a channel is the one command where
+        defaulting to "the only tenant" can still be wrong: the moment a second
+        shard is added, the same muscle-memory command silently re-homes the
+        first one's board.
         """
         slug, err = _resolve(faction)
         if err:
