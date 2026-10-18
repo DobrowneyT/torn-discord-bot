@@ -35,7 +35,20 @@ def forum():
     created.thread = MagicMock(id=700)
     created.message = MagicMock(id=800)
     f.create_thread = AsyncMock(return_value=created)
+    in_forum(f)
     return f
+
+
+def in_forum(f, active=(), archived=()):
+    """The forum's threads: `threads` is a list, `archived_threads` an async iterator."""
+    f.threads = list(active)
+
+    def _archived(**_kw):
+        async def gen():
+            for t in archived:
+                yield t
+        return gen()
+    f.archived_threads = MagicMock(side_effect=_archived)
 
 
 @pytest.fixture
@@ -627,3 +640,64 @@ class TestADeletedMessageIsRePosted:
                     self._client(), "forge", entry(message_id="999"),
                     {"101": {"thread_id": 700}}, forum))
         thread.send.assert_not_called()
+
+
+class TestAThreadTheRegistryDoesNotKnow:
+    """#962: a member with a thread in the forum but no registry row."""
+
+    def test_a_tagged_thread_is_adopted_not_duplicated(self, forum, facts):
+        thread = fake_thread(710, archived=True, name="OldName [101]")
+        thread.history = MagicMock(return_value=history_of())
+        in_forum(forum, archived=[fake_thread(711, name="Other [202]"), thread])
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted") as posted:
+            ok, _ = run(poster.post_one(MagicMock(), "forge", entry(), {}, forum))
+        assert ok
+        forum.create_thread.assert_not_called()
+        thread.send.assert_awaited_once()
+        # Recorded, so the registry has the row and the scan happens once.
+        assert posted.call_args.kwargs["thread_id"] == 710
+
+    def test_a_join_note_adopts_the_thread_too(self, forum):
+        thread = fake_thread(710, name="Someone [101]")
+        in_forum(forum, active=[thread])
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "mark_posted") as posted:
+            ok, _ = run(poster.post_one(MagicMock(), "forge", entry(
+                kind="joined", payload={"member_name": "Someone"}), {}, forum))
+        assert ok
+        forum.create_thread.assert_not_called()
+        assert posted.call_args.kwargs["thread_id"] == 710
+
+    def test_an_untagged_thread_with_their_name_is_reported_not_adopted(self, forum, facts):
+        in_forum(forum, archived=[fake_thread(720, name="someone ")])
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(poster.ThreadMismatch, match=r"no \[101\]"):
+                run(poster.post_one(MagicMock(), "forge", entry(), {}, forum))
+        forum.create_thread.assert_not_called()
+
+    def test_two_tagged_threads_is_refused(self, forum, facts):
+        in_forum(forum, active=[fake_thread(730)], archived=[fake_thread(731)])
+        with patch.object(poster.api, "report", return_value=facts):
+            with pytest.raises(poster.ThreadMismatch, match="2 threads"):
+                run(poster.post_one(MagicMock(), "forge", entry(), {}, forum))
+        forum.create_thread.assert_not_called()
+
+    def test_no_thread_anywhere_still_creates_one(self, forum, facts):
+        in_forum(forum, active=[fake_thread(740, name="Other [202]")])
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            ok, _ = run(poster.post_one(MagicMock(), "forge", entry(), {}, forum))
+        assert ok
+        forum.create_thread.assert_awaited_once()
+
+    def test_a_registered_member_never_scans_the_forum(self, forum, facts):
+        thread = fake_thread()
+        thread.history = MagicMock(return_value=history_of())
+        forum.guild.get_thread.return_value = thread
+        with patch.object(poster.api, "report", return_value=facts), \
+             patch.object(poster.api, "mark_posted"):
+            run(poster.post_one(MagicMock(), "forge", entry(),
+                                {"101": {"thread_id": 700}}, forum))
+        forum.archived_threads.assert_not_called()
