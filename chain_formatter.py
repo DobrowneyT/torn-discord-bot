@@ -272,9 +272,11 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
     # ⚠️ An embed FOOTER renders no markdown, so "sign up" cannot be a link
     # here — a `[text](url)` written into it shows up as literal brackets. The
     # title carries the link instead (embed.url), and the footer says so.
-    footer = ("Times shown in TCT and your own timezone · tap the title to sign up"
+    # #1008: the Sign up button below is the quickest way; the title is still a
+    # link to the full sheet.
+    footer = ("Times shown in TCT and your own timezone · Sign up below, or tap the title for the sheet"
               if sign_up_url else
-              "Times shown in TCT and your own timezone · sign up on the dashboard")
+              "Times shown in TCT and your own timezone · Sign up below or on the dashboard")
     if stale:
         footer = "⚠️ Dashboard unreachable — this board is the last good reading · " + footer
     embed.set_footer(text=footer)

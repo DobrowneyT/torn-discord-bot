@@ -80,3 +80,55 @@ async def fetch(tenant: "chain_tenants.Tenant") -> Optional[Dict]:
 async def fetch_slug(slug: str) -> Optional[Dict]:
     tenant = chain_tenants.get(slug)
     return await fetch(tenant) if tenant else None
+
+
+#: What a sign-up call returns when the dashboard could not be asked at all —
+#: as distinct from it ANSWERING with a refusal. See `post_sync`.
+UNREACHABLE = "unreachable"
+
+
+def post_sync(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
+    """
+    Blocking POST to `/api/internal/chain-watch<path>` (#1008).
+
+    Returns the dashboard's JSON — `{"ok": true, ...}` or `{"ok": false,
+    "code": ..., "error": ...}` — or `{"ok": False, "code": UNREACHABLE}`.
+
+    ⚠️ **UNREACHABLE is not "nothing happened".** A timeout can fire after the
+    dashboard has written the sign-up. The caller must say "could not confirm",
+    never "failed", or a member signs up twice in two different hours believing
+    the first one did not take.
+    """
+    token = tenant.token()
+    if not token:
+        log.warning("no token for %s — cannot sign anybody up", tenant.slug)
+        return {"ok": False, "code": UNREACHABLE}
+    try:
+        res = requests.post(
+            tenant.url + path,
+            json=body,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=TIMEOUT_SECONDS,
+        )
+    except requests.RequestException as e:
+        log.warning("%s unreachable for %s: %s", tenant.slug, path, e)
+        return {"ok": False, "code": UNREACHABLE}
+    try:
+        data = res.json()
+    except ValueError:
+        log.warning("%s answered %s to %s without JSON", tenant.slug, res.status_code, path)
+        return {"ok": False, "code": UNREACHABLE}
+    if res.status_code == 401:
+        log.error("%s rejected our token on %s", tenant.slug, path)
+        return {"ok": False, "code": UNREACHABLE}
+    # ⚠️ A body without `ok` is not one of ours — typically Fastify's 404 for a
+    # tenant whose dashboard predates this route.
+    if not isinstance(data, dict) or "ok" not in data:
+        log.warning("%s answered %s to %s with an unexpected body", tenant.slug, res.status_code, path)
+        return {"ok": False, "code": UNREACHABLE}
+    return data
+
+
+async def post(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
+    """Async wrapper — `requests` must not block the gateway (see `fetch`)."""
+    return await asyncio.to_thread(post_sync, tenant, path, body)

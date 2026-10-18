@@ -81,3 +81,39 @@ def test_a_timeout_is_caught_too(monkeypatch):
 def test_fetch_slug_on_an_unknown_faction(monkeypatch):
     import asyncio
     assert asyncio.run(chain_api.fetch_slug("nope")) is None
+
+
+# ── #1008: sign-up POSTs ─────────────────────────────────────────────────────
+
+def test_post_relays_the_dashboards_answer(monkeypatch):
+    t = tenant(monkeypatch)
+    seen = {}
+
+    def fake_post(url, json=None, headers=None, timeout=None):
+        seen.update(url=url, json=json, headers=headers)
+        return Res(409, {"ok": False, "code": "hour_full", "error": "full"})
+
+    monkeypatch.setattr(chain_api.requests, "post", fake_post)
+    out = chain_api.post_sync(t, "/signups", {"member_id": "1", "hour_start": 5})
+    assert out["code"] == "hour_full"
+    assert seen["url"] == "https://forge.monchoon.me/api/internal/chain-watch/signups"
+    assert seen["headers"]["Authorization"] == "Bearer abc"
+
+
+def test_post_failures_are_unreachable_never_a_refusal(monkeypatch):
+    # ⚠️ A timeout may have landed. "Unreachable" makes the bot say it cannot
+    # confirm, rather than "failed" — which invites a duplicate sign-up.
+    t = tenant(monkeypatch)
+    cases = [
+        requests.Timeout("slow"),
+        Res(502, bad_json=True),
+        Res(404, {"message": "Route POST:/x not found", "statusCode": 404}),
+        Res(401, {"error": "Authentication required"}),
+    ]
+    for case in cases:
+        def fake_post(*a, _c=case, **k):
+            if isinstance(_c, Exception):
+                raise _c
+            return _c
+        monkeypatch.setattr(chain_api.requests, "post", fake_post)
+        assert chain_api.post_sync(t, "/signups", {}) == {"ok": False, "code": chain_api.UNREACHABLE}
