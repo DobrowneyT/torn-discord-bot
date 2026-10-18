@@ -324,3 +324,12 @@ def test_a_running_board_is_unchanged():
     e = board([hour(0, [w("Ann"), w("Bob")])], preview=False)
     assert "Chain Watch starts" not in e.description
     assert "the next 6 hours" in e.description
+
+
+def test_a_preview_lists_the_same_day_of_hours_as_a_running_board():
+    week = 24 * 7
+    hours = [hour(week + i, [w("Ann")]) for i in range(30)]
+    full = f.build_board({"event": {"title": "T", "slots_per_hour": 2}, "gap_horizon_hours": 6,
+                          "hours": hours, "preview": True}, now_ms=NOW, hours_shown=24)[0]
+    # 24 hours listed, each with Ann — not just the first six.
+    assert full.description.count("Ann") == 24

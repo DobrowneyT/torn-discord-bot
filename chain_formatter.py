@@ -247,8 +247,10 @@ def build_board(watch: Dict, *, now_ms: int, hours_shown: int = 24,
         lines.append(f"**Every slot in {window} is covered.**")
     lines.append("")
 
-    # A preview lists the opening hours only; once running, the hours ahead.
-    lines.extend(_hour_lines(soon if preview else hours[:hours_shown], slots_per_hour, compact=compact))
+    # The same day's worth either way (MonChoon, 2026-10-18): the opening
+    # `hours_shown` hours before the event, the hours ahead once it runs. The
+    # coverage count above stays on the shorter horizon in both cases.
+    lines.extend(_hour_lines(hours[:hours_shown], slots_per_hour, compact=compact))
 
     embed = discord.Embed(
         title=f"{EMBED_TITLE} — {event.get('title', 'Chain')}",
