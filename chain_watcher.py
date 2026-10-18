@@ -164,6 +164,7 @@ class ChainWatcher:
             hours_shown=chain_settings.get(slug, "board_hours_shown"),
             compact=chain_settings.get(slug, "board_compact"),
             sign_up_url=tenant.sign_up_url,
+            preview_hours=chain_settings.get(slug, "board_preview_hours"),
             stale=stale)
         known = self._board_messages.get(slug)
         if known is None:
