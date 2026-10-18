@@ -271,7 +271,7 @@ def test_the_board_puts_the_link_on_the_title_not_the_footer():
 def test_the_board_still_reads_sensibly_with_no_url():
     e = board([hour(1, [w("A"), w("B")])])
     assert e.url is None
-    assert "sign up on the dashboard" in e.footer.text
+    assert "Sign up below or on the dashboard" in e.footer.text
 
 
 def test_the_gap_ping_carries_a_real_markdown_link():

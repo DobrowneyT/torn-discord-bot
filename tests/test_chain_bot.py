@@ -514,3 +514,26 @@ def test_no_permissions_at_all_names_view_channel_first():
     # cause, and it is fixed in a different place from the others.
     assert chain_bot_sender.missing_permissions(0)[0] == "View Channel"
     assert chain_bot_sender.missing_permissions(0, thread=True)[0] == "View Channel"
+
+
+def test_board_carries_the_sign_up_buttons_on_post_and_edit():
+    # #1008 — ⚠️ on the EDIT too: a board posted before the buttons existed has
+    # none, and only an edit can add them.
+    view = object()
+    ch = FakeChannel()
+    s = sender({1: ch})
+    s.board_view = view
+    asyncio.run(s.board(1, [], None))
+    assert ch.sent[0][1]["view"] is view
+
+    edited = {}
+
+    class Msg(FakeMessage):
+        async def edit(self, **kwargs):
+            edited.update(kwargs)
+
+    ch2 = FakeChannel(existing=Msg(55))
+    s2 = sender({1: ch2})
+    s2.board_view = view
+    asyncio.run(s2.board(1, [], 55))
+    assert edited["view"] is view

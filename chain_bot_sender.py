@@ -168,6 +168,14 @@ class DiscordSender(chain_watcher.Sender):
         except discord.HTTPException as e:
             log.warning("could not re-open thread %s: %s", channel.id, e)
 
+    #: The Sign up / Drop my slot buttons (#1008), set by ChainRuntime. ⚠️ Sent on
+    #: EVERY edit too: an edit without `view=` keeps the old components, but a
+    #: board posted before this feature has none, and only an edit can add them.
+    board_view = None
+
+    def _board_kwargs(self):
+        return {"view": self.board_view} if self.board_view is not None else {}
+
     async def board(self, channel_id: int, embeds, message_id: Optional[int]):
         channel = await self._channel(channel_id, "draw the board")
         if channel is None:
@@ -177,7 +185,7 @@ class DiscordSender(chain_watcher.Sender):
             await self._wake(channel)
             try:
                 message = await channel.fetch_message(message_id)
-                await message.edit(embeds=embeds)
+                await message.edit(embeds=embeds, **self._board_kwargs())
                 return message_id
             except discord.NotFound:
                 # ⚠️ Somebody deleted it. Post a fresh one rather than going
@@ -190,7 +198,7 @@ class DiscordSender(chain_watcher.Sender):
                 log.warning("could not edit board %s: %s", message_id, e)
                 return message_id
         try:
-            sent = await channel.send(embeds=embeds)
+            sent = await channel.send(embeds=embeds, **self._board_kwargs())
         except discord.Forbidden:
             # ⚠️ Logged as an instruction, once per tick, without a traceback.
             # This fires every cycle until somebody fixes the channel, and a

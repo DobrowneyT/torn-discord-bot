@@ -28,6 +28,7 @@ import choon_commands
 import chain_notify
 import chain_link_sync
 import chain_settings
+import chain_signup
 import chain_tenants
 import war_overview_commands
 import chain_watcher
@@ -138,6 +139,12 @@ class ChainRuntime:
 
     async def setup(self) -> None:
         self._adopt_legacy_lead_role()
+        # #1008 — the board's Sign up / Drop my slot buttons. ⚠️ Registered as a
+        # PERSISTENT view, so buttons on boards posted before a restart still
+        # route here.
+        buttons = chain_signup.BoardButtons(on_change=self._redraw_one)
+        self.client.add_view(buttons)
+        self.watcher.sender.board_view = buttons
         chain_commands.register(self.tree, lead_role_id=self.lead_role_id,
                                 on_change=self.refresh_now,
                                 sender=self.watcher.sender)
