@@ -97,6 +97,11 @@ class Tenant:
         return f"{self.base_url}/api/internal/chain-watch"
 
     @property
+    def oc_url(self) -> str:
+        """The OC board's feed (#1019) — same token as Chain Watch."""
+        return f"{self.base_url}/api/internal/oc-watch"
+
+    @property
     def sign_up_url(self) -> str:
         """The page a member actually claims a slot on.
 

@@ -28,6 +28,7 @@ import choon_commands
 import chain_notify
 import chain_link_sync
 import chain_settings
+import oc_commands
 import chain_signup
 import chain_tenants
 import war_overview_commands
@@ -152,6 +153,8 @@ class ChainRuntime:
         # ⚠️ The SAME tree — see the note below. `/choon` carries the bot-wide
         # controls that used to sit under `/chain tenant` (#826).
         choon_commands.register(self.tree, on_change=self.refresh_now)
+        # #1019 — `/oc thread`, on the same tree (one tree per client).
+        oc_commands.register(self.tree, on_change=getattr(self.client, "refresh_oc", None))
 
         # ⚠️ **War Overview shares this TREE and nothing else.** discord.py
         # allows exactly one CommandTree per client, so `/rw overview` has to

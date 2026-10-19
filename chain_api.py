@@ -28,8 +28,8 @@ log = logging.getLogger("chain_api")
 TIMEOUT_SECONDS = 10
 
 
-def fetch_sync(tenant: "chain_tenants.Tenant") -> Optional[Dict]:
-    """Blocking fetch. Returns the payload, or None with the reason logged."""
+def fetch_sync(tenant: "chain_tenants.Tenant", url: Optional[str] = None) -> Optional[Dict]:
+    """Blocking fetch of `url` (default: the Chain Watch feed). The payload, or None with the reason logged."""
     token = tenant.token()
     if not token:
         # ⚠️ Named explicitly. A missing token is a provisioning mistake, not an
@@ -43,7 +43,7 @@ def fetch_sync(tenant: "chain_tenants.Tenant") -> Optional[Dict]:
         return None
     try:
         res = requests.get(
-            tenant.url,
+            url or tenant.url,
             headers={"Authorization": f"Bearer {token}"},
             timeout=TIMEOUT_SECONDS,
         )
@@ -75,6 +75,11 @@ async def fetch(tenant: "chain_tenants.Tenant") -> Optional[Dict]:
     disconnect. A thread keeps one slow dashboard from taking the gateway down.
     """
     return await asyncio.to_thread(fetch_sync, tenant)
+
+
+async def fetch_oc(tenant: "chain_tenants.Tenant") -> Optional[Dict]:
+    """The OC board's feed (#1019): crimes, roster and each seat's minimum."""
+    return await asyncio.to_thread(fetch_sync, tenant, tenant.oc_url)
 
 
 async def fetch_slug(slug: str) -> Optional[Dict]:
