@@ -14,10 +14,15 @@ from discord import app_commands
 import chain_api
 import chain_tenants
 import choon_auth
+import oc_reports
 import oc_settings
 from war_overview_commands import resolve, slug_choices
 
 log = logging.getLogger("oc_commands")
+
+
+async def _faction_choices(interaction: discord.Interaction, current: str):
+    return slug_choices(current, interaction)
 
 
 def register(tree: app_commands.CommandTree, *, on_change=None,
@@ -109,6 +114,66 @@ def register(tree: app_commands.CommandTree, *, on_change=None,
         await interaction.response.send_message(
             embed=discord.Embed(title=f"Action feed — {slug}", description="\n".join(lines)[:4000], color=0x3498DB),
             ephemeral=True)
+
+    # ── On request (#1024): nothing below posts on a schedule ────────────────
+    @oc.command(name="digest", description="OC supply right now: open seats and who is waiting (leadership)")
+    @app_commands.describe(faction="Which faction (optional when only one is configured)")
+    async def digest_cmd(interaction: discord.Interaction, faction: Optional[str] = None) -> None:
+        slug = await _managed(interaction, faction)
+        if slug is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        d = await chain_api.oc_get(chain_tenants.get(slug), "/digest")
+        if d is None:
+            await interaction.followup.send("I couldn't reach the dashboard.", ephemeral=True)
+            return
+        await interaction.followup.send(embed=oc_reports.digest_embed(slug, d), ephemeral=True)
+
+    @oc.command(name="report", description="How well OC crews were seated, and why crimes failed (leadership)")
+    @app_commands.describe(days="How far back (1–90, default 7)",
+                           faction="Which faction (optional when only one is configured)")
+    async def report_cmd(interaction: discord.Interaction, days: Optional[app_commands.Range[int, 1, 90]] = 7,
+                         faction: Optional[str] = None) -> None:
+        slug = await _managed(interaction, faction)
+        if slug is None:
+            return
+        await interaction.response.defer(ephemeral=True, thinking=True)
+        r = await chain_api.oc_get(chain_tenants.get(slug), f"/report?days={int(days or 7)}")
+        if r is None:
+            await interaction.followup.send("I couldn't reach the dashboard.", ephemeral=True)
+            return
+        await interaction.followup.send(embed=oc_reports.report_embed(slug, r), ephemeral=True)
+
+    @oc.command(name="feed", description="Turn action-feed suggestions on or off (leadership)")
+    @app_commands.describe(kind="Which suggestions", state="On or off. Omit to see the current settings.",
+                           faction="Which faction (optional when only one is configured)")
+    @app_commands.choices(
+        kind=[app_commands.Choice(name=n, value=v) for n, v in (
+            ("All suggestions", "all"), ("Better seating (swaps)", "swap"),
+            ("Joined too low", "too_low"), ("Not in an OC", "idle"))],
+        state=[app_commands.Choice(name="on", value="on"), app_commands.Choice(name="off", value="off")])
+    async def feed_cmd(interaction: discord.Interaction, kind: Optional[app_commands.Choice[str]] = None,
+                       state: Optional[app_commands.Choice[str]] = None, faction: Optional[str] = None) -> None:
+        slug = await _managed(interaction, faction)
+        if slug is None:
+            return
+        tenant = chain_tenants.get(slug)
+        if kind is not None and state is not None:
+            r = await chain_api.oc_post(tenant, "/feed-kinds", {"kind": kind.value, "enabled": state.value == "on"})
+            kinds = r.get("kinds") if r.get("code") is None else None
+        else:
+            kinds = ((await chain_api.oc_get(tenant, "/feed-kinds")) or {}).get("kinds")
+        if kinds is None:
+            await interaction.response.send_message("I couldn't reach the dashboard.", ephemeral=True)
+            return
+        label = {"swap": "Better seating", "too_low": "Joined too low", "idle": "Not in an OC"}
+        lines = [f"{'🟢' if v else '⚪'} {label.get(k, k)} — {'on' if v else 'off'}" for k, v in kinds.items()]
+        note = ("\n\n_Switching a kind off closes its open suggestions as \"Turned off\" within a minute._"
+                if kind is not None and state is not None else "")
+        await interaction.response.send_message(f"**Action feed — `{slug}`**\n" + "\n".join(lines) + note, ephemeral=True)
+
+    for _cmd in (digest_cmd, report_cmd, feed_cmd):
+        _cmd.autocomplete("faction")(_faction_choices)
 
     @test_cmd.autocomplete("faction")
     async def test_faction_autocomplete(interaction: discord.Interaction, current: str):
