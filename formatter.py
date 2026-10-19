@@ -59,9 +59,10 @@ def build_embeds(alerts: Dict, *, now_ts: Optional[int] = None) -> List[discord.
     generated_at = alerts.get("generated_at", "")
 
     if not crimes:
+        notice = f"{alerts['notice']}\n\n" if alerts.get("notice") else ""
         embed = discord.Embed(
             title=EMBED_TITLE,
-            description=f"{LEGEND}\n\nAll clear — no organized crimes need attention.",
+            description=f"{LEGEND}\n\n{notice}All clear — no organized crimes need attention.",
             color=COLOR_OK,
         )
         embed.set_footer(text=_footer_text(generated_at))
@@ -70,7 +71,8 @@ def build_embeds(alerts: Dict, *, now_ts: Optional[int] = None) -> List[discord.
     n = len(crimes)
     header = (
         f"{LEGEND}\n\n"
-        f"**{n} crime{'s' if n != 1 else ''} need attention.**"
+        + (f"{alerts['notice']}\n\n" if alerts.get("notice") else "")
+        + f"**{n} crime{'s' if n != 1 else ''} need attention.**"
     )
     blocks = [_crime_block(c, index=i + 1, now_ts=now_ts) for i, c in enumerate(crimes)]
     description = _join_with_header(header, blocks, DESCRIPTION_LIMIT)
@@ -108,8 +110,11 @@ def _crime_block(crime: Dict, *, index: int, now_ts: Optional[int]) -> str:
         )
     for m in crime.get("missing_items", []):
         prefix = SEVERITY_PREFIX.get(m.get("severity"), "")
+        # #1019: say when the armoury can cover it — the fix is a loan, not a purchase.
+        armoury = m.get("armoury")
+        stock = f" (armoury has {armoury})" if isinstance(armoury, int) and armoury > 0 else ""
         bullets.append(
-            f"> {prefix}🎒 {_member_link(m)} — {m['position']}: {m['item']}"
+            f"> {prefix}🎒 {_member_link(m)} — {m['position']}: {m['item']}{stock}"
         )
     for m in crime.get("low_cpr", []):
         prefix = SEVERITY_PREFIX.get(m.get("severity"), "")

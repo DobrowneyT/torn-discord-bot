@@ -127,6 +127,8 @@ def build_alerts(
                         "name": user_name,
                         "position": label,
                         "item": req.get("name") or f"item_{req.get('id')}",
+                        # #1019: how many the faction armoury holds (None: unknown).
+                        "armoury": req.get("armoury_available"),
                         "severity": _missing_item_severity(hours_until),
                     })
 
@@ -149,11 +151,19 @@ def build_alerts(
                         })
 
             # 3) Low CPR — applies whether the crime is full or recruiting.
-            # Falls back to DEFAULT_CPR_THRESHOLD when this crime or position
-            # isn't tuned in config.
-            required = _resolve_cpr_threshold(label, position_thresholds)
+            #
+            # ⚠️ #1019: the dashboard sends each seat's minimum as
+            # `required_cpr`, from the faction's own published table. A seat it
+            # sends with `None` has no published minimum and is NOT judged —
+            # the old flat 75 for anything unlisted was a bar nobody chose. The
+            # config table below is only the fallback for a payload without the
+            # field (the pre-#1019 Torn-direct shape, kept for the tests).
+            if "required_cpr" in slot:
+                required = slot.get("required_cpr")
+            else:
+                required = _resolve_cpr_threshold(label, position_thresholds)
             cpr = slot.get("checkpoint_pass_rate")
-            if cpr is not None and cpr < required:
+            if required is not None and cpr is not None and cpr < required:
                 cpr_int = int(round(float(cpr)))
                 low_cpr.append({
                     "user_id": user_id,
