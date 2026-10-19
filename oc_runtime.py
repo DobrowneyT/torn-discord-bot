@@ -156,7 +156,7 @@ class OcBoards:
         # would stop overrides being pruned) — the dashboard re-sends next tick.
         try:
             counts = await oc_feed.sync(tenant, payload, message.channel)
-            if counts["posted"] or counts["edited"]:
+            if counts["posted"] or counts["edited"] or counts.get("deleted"):
                 log.info("%s: action feed %s", tenant.slug, counts)
         except Exception:                                      # noqa: BLE001
             log.exception("%s: action feed failed this tick", tenant.slug)
