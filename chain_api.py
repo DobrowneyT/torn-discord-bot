@@ -92,7 +92,8 @@ async def fetch_slug(slug: str) -> Optional[Dict]:
 UNREACHABLE = "unreachable"
 
 
-def post_sync(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
+def post_sync(tenant: "chain_tenants.Tenant", path: str, body: Dict,
+              base: Optional[str] = None) -> Dict:
     """
     Blocking POST to `/api/internal/chain-watch<path>` (#1008).
 
@@ -110,7 +111,7 @@ def post_sync(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
         return {"ok": False, "code": UNREACHABLE}
     try:
         res = requests.post(
-            tenant.url + path,
+            (base or tenant.url) + path,
             json=body,
             headers={"Authorization": f"Bearer {token}"},
             timeout=TIMEOUT_SECONDS,
@@ -137,3 +138,17 @@ def post_sync(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
 async def post(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
     """Async wrapper — `requests` must not block the gateway (see `fetch`)."""
     return await asyncio.to_thread(post_sync, tenant, path, body)
+
+
+def get_json_sync(tenant: "chain_tenants.Tenant", url: str) -> Optional[Dict]:
+    """A plain authorised GET of any internal route; None on any failure."""
+    return fetch_sync(tenant, url)
+
+
+async def oc_post(tenant: "chain_tenants.Tenant", path: str, body: Dict) -> Dict:
+    """POST to `/api/internal/oc-watch<path>` (#1020) — same rules as `post`."""
+    return await asyncio.to_thread(post_sync, tenant, path, body, tenant.oc_url)
+
+
+async def oc_get(tenant: "chain_tenants.Tenant", path: str) -> Optional[Dict]:
+    return await asyncio.to_thread(get_json_sync, tenant, tenant.oc_url + path)

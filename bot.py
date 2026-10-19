@@ -21,6 +21,7 @@ from dotenv import load_dotenv
 
 import chain_runtime
 import member_threads_runtime
+import oc_feed
 import oc_runtime
 from state import CprOverrideStore
 from views import open_override_menu
@@ -63,6 +64,8 @@ class OCWatcher(discord.Client):
         # Register the persistent view so button clicks route to its callback
         # even on messages sent in a previous bot lifetime.
         self.add_view(self.view)
+        # #1020 — Done / Not now on every action-feed message, past and future.
+        self.add_dynamic_items(oc_feed.SuggestionButton)
         self.poll_loop.start()
         if self.chain:
             # ⚠️ Guarded, and it must never take the OC boards down with it.
