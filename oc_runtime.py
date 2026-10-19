@@ -28,6 +28,7 @@ import chain_api
 import chain_tenants
 import enrich
 import formatter as formatter_mod
+import oc_feed
 import oc_settings
 import state
 from state import CprOverrideStore
@@ -150,6 +151,15 @@ class OcBoards:
         embeds = formatter_mod.build_embeds(alerts, now_ts=now_ts)
         embeds[0].title = f"{formatter_mod.EMBED_TITLE} · {tenant.slug.upper()}"
         await message.edit(embeds=embeds, view=self.view)
+        # #1020 — the action feed, in the same thread, after the board.
+        # ⚠️ Guarded: a feed failure must not count as the board failing (which
+        # would stop overrides being pruned) — the dashboard re-sends next tick.
+        try:
+            counts = await oc_feed.sync(tenant, payload, message.channel)
+            if counts["posted"] or counts["edited"]:
+                log.info("%s: action feed %s", tenant.slug, counts)
+        except Exception:                                      # noqa: BLE001
+            log.exception("%s: action feed failed this tick", tenant.slug)
         return {c["id"] for c in payload.get("crimes") or [] if "id" in c}
 
     async def _message(self, slug: str, thread_id: int) -> Optional[discord.Message]:
