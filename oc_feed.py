@@ -7,6 +7,11 @@ draws what it is told and reports back which version it drew; anything the bot
 has not confirmed comes back next tick, so a crash between "edited the message"
 and "told the dashboard" costs one redraw, never a lost or duplicated post.
 
+⚠️ **A closed suggestion's message is DELETED** (MonChoon, 2026-10-19: "delete
+the messages automatically once they've been cleared or expired"). Done,
+resolved, expired and turned-off suggestions leave nothing in the thread; a
+snoozed one stays, because it comes back.
+
 ⚠️ **Pings only on the FIRST post**, and only the faction's ping list
 (MonChoon, to start). A redraw — an edit, a snooze, a close — never pings.
 
@@ -35,6 +40,9 @@ KIND_LABEL = {
     "idle": "💤 Not in an OC",
     "test": "🧪 Test",
 }
+
+#: Statuses whose message is removed rather than redrawn.
+CLOSED = {"done", "resolved", "expired"}
 
 STATUS_COLOR = {
     "open": 0xE67E22, "snoozed": 0x95A5A6, "done": 0x2ECC71,
@@ -134,7 +142,17 @@ class SuggestionButton(discord.ui.DynamicItem[discord.ui.Button],
                 ephemeral=True)
             return
         s = result["suggestion"]
-        # Redraw now rather than at the next tick, and say so to the dashboard.
+        if s.get("status") in CLOSED:
+            # Done: off the thread at once, and say so to the presser only.
+            try:
+                await interaction.message.delete()
+            except discord.NotFound:
+                pass
+            await chain_api.oc_post(tenant, f"/suggestions/{s['id']}/rendered",
+                                    {"version": s["version"], "deleted": True})
+            await interaction.followup.send("✅ Marked done — removed from the thread.", ephemeral=True)
+            return
+        # Snoozed: redraw now rather than at the next tick.
         await interaction.message.edit(embed=render(s), view=view_for(self.slug, s), content=None)
         await chain_api.oc_post(tenant, f"/suggestions/{s['id']}/rendered", {"version": s["version"]})
 
@@ -161,7 +179,7 @@ def ping_content(member_ids: List[str]) -> Optional[str]:
 
 async def sync(tenant, payload: Dict, channel: discord.abc.Messageable) -> Dict[str, int]:
     """Draw every suggestion the dashboard says needs it. Returns counts for the log."""
-    counts = {"posted": 0, "edited": 0, "skipped": 0}
+    counts = {"posted": 0, "edited": 0, "skipped": 0, "deleted": 0}
     pings = ping_content(payload.get("ping_member_ids") or [])
     for s in payload.get("findings") or []:
         try:
@@ -180,6 +198,17 @@ async def _draw(tenant, s: Dict, channel, pings: Optional[str], counts: Dict[str
             message = await channel.fetch_message(int(s["message_id"]))
         except discord.NotFound:
             message = None
+    if s.get("status") in CLOSED:
+        # Closed: remove the message (if there still is one) and say so.
+        if message is not None:
+            try:
+                await message.delete()
+            except discord.NotFound:
+                pass
+        await chain_api.oc_post(tenant, f"/suggestions/{s['id']}/rendered",
+                                {"version": s["version"], "deleted": True})
+        counts["deleted"] = counts.get("deleted", 0) + 1
+        return
     if message is None:
         if s.get("status") != "open":
             # Closed before it was ever posted (or its message was deleted):

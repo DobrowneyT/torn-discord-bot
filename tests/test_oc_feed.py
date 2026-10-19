@@ -104,7 +104,7 @@ class TestSync:
         msg = MagicMock()
         msg.edit = AsyncMock()
         ch = channel_with(msg)
-        counts, post = run_sync({"findings": [sug(status="done", acted_by="x", version=3, message_id="777")],
+        counts, post = run_sync({"findings": [sug(status="snoozed", acted_by="x", version=3, message_id="777")],
                                  "ping_member_ids": ["2250591"]}, ch)
         assert counts["edited"] == 1
         ch.send.assert_not_awaited()
@@ -112,11 +112,28 @@ class TestSync:
         assert msg.edit.await_args.kwargs["view"] is None
         assert post.await_args.args[2] == {"version": 3}
 
+    def test_a_closed_suggestion_s_message_is_deleted(self):
+        for status in ("done", "resolved", "expired"):
+            msg = MagicMock()
+            msg.delete = AsyncMock()
+            msg.edit = AsyncMock()
+            ch = channel_with(msg)
+            counts, post = run_sync({"findings": [sug(status=status, version=4, message_id="777")]}, ch)
+            msg.delete.assert_awaited_once()
+            msg.edit.assert_not_awaited()
+            assert counts["deleted"] == 1
+            assert post.await_args.args[2] == {"version": 4, "deleted": True}
+
+    def test_an_already_deleted_message_is_fine(self):
+        ch = channel_with(missing=True)
+        counts, post = run_sync({"findings": [sug(status="expired", message_id="777")]}, ch)
+        assert counts["deleted"] == 1 and post.await_args.args[2]["deleted"] is True
+
     def test_closed_before_it_was_ever_posted_is_only_acknowledged(self):
         ch = channel_with()
         counts, post = run_sync({"findings": [sug(status="expired")]}, ch)
         ch.send.assert_not_awaited()
-        assert counts["skipped"] == 1 and post.await_args.args[2] == {"version": 1}
+        assert post.await_args.args[2] == {"version": 1, "deleted": True}
 
     def test_an_open_one_whose_message_was_deleted_is_posted_again(self):
         ch = channel_with(missing=True)
@@ -142,6 +159,7 @@ class TestPressing:
             interaction.response.defer = AsyncMock()
             interaction.followup.send = AsyncMock()
             interaction.message.edit = AsyncMock()
+            interaction.message.delete = AsyncMock()
             post = AsyncMock(side_effect=[result or {"ok": True, "suggestion": sug(status="done", acted_by="MonChoon", version=2)},
                                           {"ok": True}])
             with patch.object(oc_feed.choon_auth, "may_manage", return_value=(allowed, "Managers only.")), \
@@ -150,11 +168,13 @@ class TestPressing:
             return interaction, post
         return asyncio.run(go())
 
-    def test_a_manager_marks_it_done_and_the_message_redraws_at_once(self):
+    def test_a_manager_marks_it_done_and_the_message_is_removed_at_once(self):
         interaction, post = self._press()
         assert post.await_args_list[0].args[1:] == ("/suggestions/12/act", {"action": "done", "by": "MonChoon"})
-        assert interaction.message.edit.await_args.kwargs["view"] is None
-        assert post.await_args_list[1].args[1:] == ("/suggestions/12/rendered", {"version": 2})
+        interaction.message.delete.assert_awaited_once()
+        interaction.message.edit.assert_not_awaited()
+        assert post.await_args_list[1].args[1:] == ("/suggestions/12/rendered", {"version": 2, "deleted": True})
+        assert "removed from the thread" in interaction.followup.send.await_args.args[0]
 
     def test_a_non_manager_is_refused_and_nothing_is_sent(self):
         interaction, post = self._press(allowed=False)
